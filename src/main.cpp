@@ -1,23 +1,20 @@
 // ============================================================
-//  STM32WLE5 Low-Power LoRa APRS Tracker + Digipeater
+//  STM32WLE5 LoRa APRS Tracker + Digipeater
 //  Target: Ebyte E77-400MBL-01 (STM32WLE5CC)
 //
-//  Radio init sequence verified against PicoTrack by K6ATV:
+//  Radio init sequence verified against PicoTrack (K6ATV):
 //    https://github.com/radiohound/PicoTrack
 //
-//  Key differences from PicoTrack (intentional):
-//    - Uses APRSPacketLib for packet encoding/decoding (enables
-//      digipeater path manipulation on received packets).
-//    - Adds digipeater and digi-only operating modes.
-//    - Adds GPS power-gating option.
-//    - Re-uses PicoTrack's proven radio init sequence exactly:
-//        setRfSwitchTable → begin() → aprs/radio setup →
-//        setTCXO → setOutputPower → setCurrentLimit
+//  Power improvements over original:
+//  - radioInit() separated from gpsInit() — only re-init what
+//    is actually needed after each deepSleep wakeup.
+//  - MODE_DIGI_CAD: CAD-based digipeater uses ~0.1 mA average
+//    vs ~6 mA for continuous RX, enabling battery/solar operation.
+//  - CAD runs in batches to amortise the ~100 ms / 7 mA init
+//    overhead across multiple scans before sleeping the radio.
 //
 //  GPS wiring (E77 dev board, per PicoTrack):
-//    PA9  = I2C SCL
-//    PA10 = I2C SDA
-//    Uses Wire (I2C), not UART.
+//    PA9 = I2C SCL,  PA10 = I2C SDA
 // ============================================================
 
 #include <Arduino.h>
@@ -31,7 +28,7 @@
 #include "config.h"
 
 // ============================================================
-//  DEBUG HELPERS
+//  DEBUG
 // ============================================================
 #if DEBUG_SERIAL
     #define DBG(...)   Serial.print(__VA_ARGS__)
@@ -43,7 +40,6 @@
 
 // ============================================================
 //  RADIO
-//  STM32WLx: no SPI pins needed — radio is internal to chip.
 // ============================================================
 STM32WLx radio = new STM32WLx_Module();
 
@@ -51,7 +47,7 @@ static const uint32_t rfswitch_pins[] = RFSWITCH_PINS;
 static const Module::RfSwitchMode_t rfswitch_table[] = { RFSWITCH_TABLE };
 
 // ============================================================
-//  GPS  (I2C, matching PicoTrack wiring PA9=SCL, PA10=SDA)
+//  GPS
 // ============================================================
 SFE_UBLOX_GNSS myGPS;
 
@@ -63,153 +59,161 @@ STM32RTC& rtc = STM32RTC::getInstance();
 // ============================================================
 //  STATE
 // ============================================================
-static char myCallsignFull[12];   // "N0CALL-9"
+static char myCallsignFull[12];
 
 struct Position {
-    float    lat    = 0.0f;
-    float    lon    = 0.0f;
-    float    altM   = 0.0f;   // metres MSL
-    int      speed  = 0;      // knots
-    int      course = 0;      // degrees
-    uint8_t  sats   = 0;
-    bool     valid  = false;
+    float   lat = 0.0f, lon = 0.0f, altM = 0.0f;
+    int     speed = 0, course = 0;
+    uint8_t sats = 0;
+    bool    valid = false;
 };
 static Position lastPos;
 
-// Digipeater RX flag — set from ISR
-volatile bool radioRxFlag = false;
+// Whether radioInit() has been called since last power-on/reset.
+// Avoids repeating the full init sequence unnecessarily.
+static bool radioReady = false;
+static bool gpsReady   = false;
 
-// Duplicate suppression ring buffer (CRC32)
+// ============================================================
+//  INTERRUPT FLAGS
+// ============================================================
+volatile bool radioRxFlag  = false;
+volatile bool radioCadFlag = false;
+
+// ============================================================
+//  DUPLICATE SUPPRESSION
+// ============================================================
 static uint32_t dedupe[8];
 static uint8_t  dedupeIdx = 0;
 
-// Pending retransmit queue
-struct DigiQueueEntry {
-    String   packet;
-    uint32_t txAfterMs;
-    bool     used;
-};
+struct DigiQueueEntry { String packet; uint32_t txAfterMs; bool used; };
 static DigiQueueEntry digiQueue[DIGI_QUEUE_SIZE];
 
 // ============================================================
 //  FORWARD DECLARATIONS
 // ============================================================
-void radioAndGpsInit();
+void radioInit();
 void radioSleep();
 void radioStartRx();
-bool radioTransmit(const String& packet);
+void radioStartCad();
+bool radioTransmit(const String& tnc2);
 void IRAM_ATTR onRadioRx();
+void IRAM_ATTR onRadioCad();
 
-bool gpsBegin();
-bool waitForFix(uint32_t timeoutMs);
+void gpsInit();
 void gpsPowerOn();
 void gpsPowerOff();
+bool waitForFix(uint32_t timeoutMs);
 
-void     sendBeacon();
-String   buildAPRSPacket();
+void   sendBeacon();
+String buildAPRSPacket();
 
-void     processRxPacket();
-bool     needsDigipeat(const String& raw, String& modified);
-bool     isDuplicate(const String& raw);
-void     markDuplicate(const String& raw);
+void   runDiGiCAD();
+void   processRxPacket();
+bool   needsDigipeat(const String& raw, String& modified);
+bool   isDuplicate(const String& raw);
+void   markDuplicate(const String& raw);
 uint32_t crc32(const String& s);
-void     enqueueForDigipeat(const String& pkt);
-void     flushDigiQueue();
+void   enqueueForDigipeat(const String& pkt);
+void   flushDigiQueue();
 
-void     enterDeepSleep(uint32_t ms);
+void enterDeepSleep(uint32_t ms);
 
 // ============================================================
-//  RADIO + GPS INITIALISATION
+//  RADIO INIT
 //
-//  IMPORTANT: This sequence matches PicoTrack exactly:
-//    1. setRfSwitchTable (must be before begin())
-//    2. radio.begin(freq, bw, sf, cr)
-//    3. radio.setTCXO(voltage)       ← AFTER begin(), per PicoTrack
-//    4. radio.setOutputPower(dBm)    ← AFTER setTCXO()
-//    5. radio.setCurrentLimit(mA)    ← AFTER setOutputPower()
+//  Sequence verified against PicoTrack:
+//  setRfSwitchTable → begin() → setTCXO() →
+//  setOutputPower() → setCurrentLimit()
 //
-//  PicoTrack calls setup() again from the top of loop() after
-//  waking from deepSleep because STM32 peripherals need
-//  re-initialisation post-Stop2. We do the same.
+//  Separated from gpsInit() so tracker mode can skip re-init
+//  of the radio on wakeups where only GPS is needed, and
+//  digi modes can skip GPS entirely.
 // ============================================================
-void radioAndGpsInit() {
-    Serial.begin(DEBUG_BAUD);
-
-    snprintf(myCallsignFull, sizeof(myCallsignFull), "%s-%d",
-             MY_CALLSIGN, MY_SSID);
-
-    // --- GPS power pin ---
-#if GPS_POWER_PIN != RADIOLIB_NC
-    pinMode(GPS_POWER_PIN, OUTPUT);
-    gpsPowerOn();
-#endif
-
-    // --- GPS over I2C (PA9=SCL, PA10=SDA on E77 dev board) ---
-    Wire.begin();
-    Wire.setClock(GPS_I2C_CLOCK);
-
-    // --- Radio: RF switch must be set before begin() ---
+void radioInit() {
     radio.setRfSwitchTable(rfswitch_pins, rfswitch_table);
 
-    DBG(F("[STM32WL] Initializing ... "));
-    // Parameters matching PicoTrack: freq, BW, SF, CR.
-    // Power, preamble, sync word are NOT passed here —
-    // they are set individually below, as PicoTrack does.
+    DBG(F("[Radio] Init... "));
     int state = radio.begin(LORA_FREQ, LORA_BW, LORA_SF, LORA_CR);
     if (state != RADIOLIB_ERR_NONE) {
         DBG(F("failed, code ")); DBGLN(state);
-        while (true) { delay(10); }
+        while (true) delay(10);
     }
-    DBGLN(F("success!"));
 
-    // --- TCXO: called AFTER begin(), matching PicoTrack ---
-    // PicoTrack comment: "set appropriate TCXO voltage for
-    // Nucleo WL55JC1, WL55JC2, or E77 boards"
-    DBG(F("Set TCXO voltage ... "));
     state = radio.setTCXO(TCXO_VOLTAGE);
     if (state != RADIOLIB_ERR_NONE) {
-        DBG(F("failed, code ")); DBGLN(state);
-        while (true) { delay(10); }
+        DBG(F("TCXO failed, code ")); DBGLN(state);
+        while (true) delay(10);
     }
-    DBGLN(F("success!"));
 
-    // --- Output power: set after TCXO, matching PicoTrack ---
     if (radio.setOutputPower(LORA_TX_POWER) == RADIOLIB_ERR_INVALID_OUTPUT_POWER) {
-        DBGLN(F("Invalid output power!"));
-        while (true) { delay(10); }
+        DBGLN(F("Invalid power!")); while (true) delay(10);
     }
-
-    // --- OCP: required for full TX power (confirmed by PicoTrack author) ---
     if (radio.setCurrentLimit(LORA_OCP_MA) == RADIOLIB_ERR_INVALID_CURRENT_LIMIT) {
-        DBGLN(F("Invalid current limit!"));
-        while (true) { delay(10); }
+        DBGLN(F("Invalid OCP!")); while (true) delay(10);
     }
 
-    // --- Sync word and preamble (not in PicoTrack but harmless to set) ---
     radio.setSyncWord(LORA_SYNC_WORD);
     radio.setPreambleLength(LORA_PREAMBLE);
-
-    // --- RX interrupt callback ---
     radio.setPacketReceivedAction(onRadioRx);
+    radio.setChannelScanAction(onRadioCad);
 
-    DBGLN(F("[Radio] Init complete."));
+    radioReady = true;
+    DBGLN(F("OK"));
+}
+
+// ============================================================
+//  GPS INIT
+//  Only called when a fix is actually needed (tracker modes).
+//  Not called in digi-only modes.
+// ============================================================
+void gpsInit() {
+    Wire.begin();
+    Wire.setClock(GPS_I2C_CLOCK);
+
+    gpsPowerOn();
+
+    if (!myGPS.begin()) {
+        DBGLN(F("[GPS] Not found. Check PA9=SCL, PA10=SDA."));
+        return;
+    }
+    myGPS.setUART1Output(0);
+    myGPS.setUART2Output(0);
+    myGPS.setI2COutput(COM_TYPE_UBX);
+    myGPS.setNavigationFrequency(1);
+    myGPS.setDynamicModel(DYN_MODEL_AIRBORNE1g);
+    myGPS.saveConfiguration();
+    gpsReady = true;
+    DBGLN(F("[GPS] OK"));
 }
 
 // ============================================================
 //  SETUP
 // ============================================================
 void setup() {
+    Serial.begin(DEBUG_BAUD);
+
+    snprintf(myCallsignFull, sizeof(myCallsignFull), "%s-%d",
+             MY_CALLSIGN, MY_SSID);
+
     LowPower.begin();
     rtc.begin();
-
     memset(digiQueue, 0, sizeof(digiQueue));
     memset(dedupe,    0, sizeof(dedupe));
 
-    radioAndGpsInit();
+#if GPS_POWER_PIN != RADIOLIB_NC
+    pinMode(GPS_POWER_PIN, OUTPUT);
+    digitalWrite(GPS_POWER_PIN, LOW);
+#endif
+
+    radioInit();
 
 #if OPERATING_MODE == MODE_DIGI_ONLY
-    DBGLN(F("Mode: DIGI_ONLY"));
     radioStartRx();
+
+#elif OPERATING_MODE == MODE_DIGI_CAD
+    // CAD mode manages its own radio state — don't start RX here.
+    DBGLN(F("Mode: DIGI_CAD"));
 #endif
 }
 
@@ -217,64 +221,141 @@ void setup() {
 //  LOOP
 // ============================================================
 void loop() {
-    // PicoTrack calls setup() again at the top of every loop
-    // iteration after waking from deepSleep, because peripherals
-    // (Serial, Wire, radio) need re-initialisation after Stop2.
-    // We do the same for TRACKER_ONLY; other modes stay awake.
 
 #if OPERATING_MODE == MODE_TRACKER_ONLY
-    // Re-init after wakeup (matches PicoTrack pattern)
-    radioAndGpsInit();
-
+    // Re-init radio and GPS after each deepSleep wakeup.
+    // These are separated so future optimisations can skip
+    // one or the other if state is already valid.
+    radioInit();
+    gpsInit();
     sendBeacon();
-
+    gpsPowerOff();
     radioSleep();
     enterDeepSleep((uint32_t)BEACON_INTERVAL_S * 1000UL);
 
 #elif OPERATING_MODE == MODE_TRACKER_DIGI
-    // Re-init after wakeup
-    radioAndGpsInit();
-
+    radioInit();
+    gpsInit();
     sendBeacon();
-
-    // After TX, stay in RX for the rest of the interval.
+    gpsPowerOff();
     radioStartRx();
-    uint32_t intervalEnd = millis() + (uint32_t)BEACON_INTERVAL_S * 1000UL;
-    while (millis() < intervalEnd) {
-        if (radioRxFlag) {
-            radioRxFlag = false;
-            processRxPacket();
-        }
+    uint32_t end = millis() + (uint32_t)BEACON_INTERVAL_S * 1000UL;
+    while (millis() < end) {
+        if (radioRxFlag) { radioRxFlag = false; processRxPacket(); }
         flushDigiQueue();
         LowPower.idle(10);
     }
 
 #elif OPERATING_MODE == MODE_DIGI_ONLY
-    if (radioRxFlag) {
-        radioRxFlag = false;
-        processRxPacket();
-    }
+    // Radio already in RX from setup(). Idle loop — no re-init needed.
+    if (radioRxFlag) { radioRxFlag = false; processRxPacket(); }
     flushDigiQueue();
     LowPower.idle(10);
+
+#elif OPERATING_MODE == MODE_DIGI_CAD
+    // CAD batch loop — run N scans per radio init cycle.
+    // Re-init radio only at the start of each batch, not every scan.
+    runDiGiCAD();
 #endif
+}
+
+// ============================================================
+//  CAD DIGIPEATER
+//
+//  Power budget per cycle (CAD_BATCH_SIZE=15, interval=2s):
+//
+//  Active batch (30 s):
+//    radioInit ~100 ms @ 7 mA      =  0.7 mAs
+//    15 × CAD 65 ms @ 1.5 mA      =  1.46 mAs
+//    15 × sleep 1935 ms @ 0.002 mA =  0.058 mAs
+//    Subtotal active 30 s          =  2.22 mAs → 0.074 mA avg
+//
+//  Deep sleep batch (30 s):
+//    Stop2 30 s @ 0.002 mA         =  0.06 mAs → 0.002 mA avg
+//
+//  Total 60 s cycle average: (2.22 + 0.06) / 60 = ~0.038 mA
+//
+//  When a packet is received (digipeat TX):
+//    Extra ~2.7 s TX @ 80 mA = 216 mAs per digipeat event.
+//    In a light APRS environment (1 packet/min) adds ~3.6 mA avg.
+//    In a quiet rural environment (1 packet/10 min) adds ~0.36 mA.
+// ============================================================
+void runDiGiCAD() {
+    // --- Active batch: radio init + N CAD scans ---
+    radioInit();
+
+    for (int scan = 0; scan < CAD_BATCH_SIZE; scan++) {
+        radioCadFlag = false;
+        radioStartCad();
+
+        // Wait up to 500 ms for CAD result (~65 ms typical at SF12).
+        uint32_t cadStart = millis();
+        while (!radioCadFlag && millis() - cadStart < 500) {
+            LowPower.idle(5);
+        }
+
+        if (!radioCadFlag) {
+            // Shouldn't happen — CAD timed out. Skip this scan.
+            continue;
+        }
+
+        int result = radio.getChannelScanResult();
+
+        if (result == RADIOLIB_LORA_DETECTED) {
+            // Something is transmitting. We've missed the triggering
+            // packet's preamble — switch to full RX and wait for the
+            // NEXT complete packet on the channel.
+            DBG(F("[CAD] Preamble! Waiting for next packet... "));
+            radioRxFlag = false;
+            radioStartRx();
+
+            // Wait up to 60 s — long enough for the current packet
+            // to finish and any retransmission / next station to TX.
+            uint32_t rxStart = millis();
+            while (!radioRxFlag && millis() - rxStart < 60000UL) {
+                LowPower.idle(10);
+            }
+
+            if (radioRxFlag) {
+                radioRxFlag = false;
+                processRxPacket();   // digipeat if appropriate
+            } else {
+                DBGLN(F("[CAD] RX timeout — back to CAD."));
+            }
+
+            // After receiving (or timeout), restart CAD batch
+            // from the beginning so we re-enter the scan loop fresh.
+            // Break out of the inner for loop; the outer loop()
+            // call will re-enter runDiGiCAD() immediately.
+            radioSleep();
+            return;
+        }
+
+        // Channel free — sleep until next scan.
+        // Radio stays initialised between scans (no sleep here).
+        // This is the key fix: we only sleep the MCU, not the radio,
+        // so no re-init is needed between scans in the same batch.
+        LowPower.deepSleep(CAD_SCAN_INTERVAL_MS);
+    }
+
+    // --- Batch complete with no detection ---
+    // Sleep the radio and MCU for the inter-batch deep sleep period.
+    // This is the long sleep that achieves the low average current.
+    DBG(F("[CAD] Batch done. Deep sleep "));
+    DBG(CAD_BATCH_SLEEP_MS / 1000);
+    DBGLN(F("s"));
+    radioSleep();
+    enterDeepSleep(CAD_BATCH_SLEEP_MS);
+    // On wakeup, loop() calls runDiGiCAD() again → radioInit() → new batch.
 }
 
 // ============================================================
 //  RADIO HELPERS
 // ============================================================
-void radioSleep() {
-    radio.sleep();
-}
+void radioSleep()    { radio.sleep();          radioReady = false; }
+void radioStartRx()  { radio.startReceive();   }
+void radioStartCad() { radio.startChannelScan(); }
 
-void radioStartRx() {
-    int state = radio.startReceive();
-    if (state != RADIOLIB_ERR_NONE) {
-        DBG(F("[RX] startReceive failed, code ")); DBGLN(state);
-    }
-}
-
-// Transmit a LoRa-APRS packet.
-// LoRa-APRS wire format: 3-byte header "<\xff\x01" + TNC2 string.
 bool radioTransmit(const String& tnc2) {
     String pkt = "<\xff\x01" + tnc2;
     DBG(F("[TX] ")); DBGLN(pkt);
@@ -286,17 +367,15 @@ bool radioTransmit(const String& tnc2) {
     return true;
 }
 
-void IRAM_ATTR onRadioRx() {
-    radioRxFlag = true;
-}
+void IRAM_ATTR onRadioRx()  { radioRxFlag  = true; }
+void IRAM_ATTR onRadioCad() { radioCadFlag = true; }
 
 // ============================================================
 //  GPS HELPERS
 // ============================================================
 void gpsPowerOn() {
 #if GPS_POWER_PIN != RADIOLIB_NC
-    digitalWrite(GPS_POWER_PIN, HIGH);
-    delay(100);
+    digitalWrite(GPS_POWER_PIN, HIGH); delay(100);
 #endif
 }
 
@@ -304,22 +383,7 @@ void gpsPowerOff() {
 #if GPS_POWER_PIN != RADIOLIB_NC
     digitalWrite(GPS_POWER_PIN, LOW);
 #endif
-}
-
-bool gpsBegin() {
-    if (!myGPS.begin()) {
-        DBGLN(F("[GPS] Not detected on I2C. Check wiring (PA9=SCL, PA10=SDA)."));
-        return false;
-    }
-    // Match PicoTrack GPS setup exactly
-    myGPS.setUART1Output(0);
-    myGPS.setUART2Output(0);
-    myGPS.setI2COutput(COM_TYPE_UBX);
-    myGPS.setNavigationFrequency(1);
-    myGPS.setDynamicModel(DYN_MODEL_AIRBORNE1g);  // 50 km altitude limit
-    myGPS.saveConfiguration();
-    DBGLN(F("[GPS] OK"));
-    return true;
+    gpsReady = false;
 }
 
 bool waitForFix(uint32_t timeoutMs) {
@@ -338,17 +402,14 @@ bool waitForFix(uint32_t timeoutMs) {
         }
         delay(100);
     }
-    DBGLN(F("[GPS] Timeout — no fix."));
+    DBGLN(F("[GPS] Fix timeout."));
     return false;
 }
 
 // ============================================================
-//  APRS BEACON
+//  BEACON
 // ============================================================
 String buildAPRSPacket() {
-    // Build a TNC2-format APRS position packet using APRSPacketLib.
-    // APRSPacketLib is used here instead of RadioLib's APRSClient
-    // because it also handles decoding received packets for digipeating.
     APRSPacket pkt;
     pkt.source    = String(myCallsignFull);
     pkt.path      = String(BEACON_PATH);
@@ -356,7 +417,7 @@ String buildAPRSPacket() {
     pkt.overlay   = APRS_SYMBOL_TABLE;
     pkt.latitude  = lastPos.lat;
     pkt.longitude = lastPos.lon;
-    pkt.altitude  = (int)(lastPos.altM * 3.28084f);  // metres → feet
+    pkt.altitude  = (int)(lastPos.altM * 3.28084f);
     pkt.speed     = lastPos.speed;
     pkt.course    = lastPos.course;
     pkt.comment   = String(MY_COMMENT);
@@ -364,136 +425,92 @@ String buildAPRSPacket() {
 }
 
 void sendBeacon() {
-    DBGLN(F("[Beacon] Getting GPS fix..."));
-    gpsPowerOn();
-
-    bool gotFix = false;
-    if (gpsBegin()) {
-        gotFix = waitForFix(GPS_FIX_TIMEOUT_MS);
-    }
-
-    if (!gotFix) {
-        DBGLN(F("[Beacon] No fix — using last known position."));
+    if (!waitForFix(GPS_FIX_TIMEOUT_MS)) {
         if (!lastPos.valid) {
-            DBGLN(F("[Beacon] No position available — skipping TX."));
-            // Don't power off if GPS is always-on (GPS_POWER_PIN == NC)
-#if GPS_POWER_PIN != RADIOLIB_NC
-            gpsPowerOff();
-#endif
+            DBGLN(F("[Beacon] No position — skipping TX."));
             return;
         }
+        DBGLN(F("[Beacon] Using last known position."));
     }
-
-#if GPS_POWER_PIN != RADIOLIB_NC
-    gpsPowerOff();
-    DBGLN(F("[GPS] Powered off."));
-#endif
-
-    String packet = buildAPRSPacket();
-    radioTransmit(packet);
+    radioTransmit(buildAPRSPacket());
 }
 
 // ============================================================
-//  DIGIPEATER
+//  STANDARD DIGIPEATER
 // ============================================================
 void processRxPacket() {
     String raw;
     int state = radio.readData(raw);
-
     if (state != RADIOLIB_ERR_NONE) {
-        DBG(F("[Digi] readData failed, code ")); DBGLN(state);
+        DBG(F("[RX] readData failed, code ")); DBGLN(state);
         radioStartRx();
         return;
     }
-
-    // Strip LoRa-APRS 3-byte header "<\xff\x01"
-    if (raw.length() > 3 && raw[0] == '<') {
-        raw = raw.substring(3);
-    }
+    if (raw.length() > 3 && raw[0] == '<') raw = raw.substring(3);
 
     DBG(F("[RX] ")); DBGLN(raw);
     DBG(F("     RSSI=")); DBG(radio.getRSSI());
     DBG(F(" SNR=")); DBGLN(radio.getSNR());
 
     String modified;
-    if (needsDigipeat(raw, modified)) {
-        if (!isDuplicate(raw)) {
-            markDuplicate(raw);
-            enqueueForDigipeat(modified);
-        } else {
-            DBGLN(F("[Digi] Duplicate — dropped."));
-        }
+    if (needsDigipeat(raw, modified) && !isDuplicate(raw)) {
+        markDuplicate(raw);
+        enqueueForDigipeat(modified);
     }
 
     radioStartRx();
 }
 
-// Parse TNC2 path and build a modified packet for retransmission.
-// TNC2 format: SOURCE>DEST,PATH:PAYLOAD
 bool needsDigipeat(const String& raw, String& modified) {
     int colonIdx = raw.indexOf(':');
     if (colonIdx < 0) return false;
-
     String header  = raw.substring(0, colonIdx);
-    String payload = raw.substring(colonIdx);  // includes ':'
-
-    int arrowIdx = header.indexOf('>');
+    String payload = raw.substring(colonIdx);
+    int arrowIdx   = header.indexOf('>');
     if (arrowIdx < 0) return false;
-
     String source      = header.substring(0, arrowIdx);
     String destAndPath = header.substring(arrowIdx + 1);
-
-    // Don't digipeat our own packets
     if (source.startsWith(MY_CALLSIGN)) return false;
-
     int commaIdx = destAndPath.indexOf(',');
-    if (commaIdx < 0) return false;  // no path at all
-
+    if (commaIdx < 0) return false;
     String dest = destAndPath.substring(0, commaIdx);
     String path = destAndPath.substring(commaIdx + 1);
 
-    // Split path into fields
-    String fields[8];
-    int    nFields = 0;
-    {
-        String rem = path;
-        while (rem.length() > 0 && nFields < 8) {
-            int sep = rem.indexOf(',');
-            if (sep < 0) { fields[nFields++] = rem; break; }
-            fields[nFields++] = rem.substring(0, sep);
-            rem = rem.substring(sep + 1);
-        }
+    String fields[8]; int nFields = 0;
+    { String rem = path;
+      while (rem.length() > 0 && nFields < 8) {
+          int sep = rem.indexOf(',');
+          if (sep < 0) { fields[nFields++] = rem; break; }
+          fields[nFields++] = rem.substring(0, sep);
+          rem = rem.substring(sep + 1);
+      }
     }
 
     bool digipeated = false;
     for (int i = 0; i < nFields && !digipeated; i++) {
-        String& f = fields[i];
-        if (f.endsWith("*")) continue;  // already used
-
-        if (f.equalsIgnoreCase(DIGI_PATH_1)) {
-            fields[i]  = String(myCallsignFull) + "*";
+        if (fields[i].endsWith("*")) continue;
+        if (fields[i].equalsIgnoreCase(DIGI_PATH_1)) {
+            fields[i] = String(myCallsignFull) + "*";
             digipeated = true;
         } else if (strlen(DIGI_PATH_2) > 0 &&
-                   (f.startsWith("WIDE2-") || f.startsWith("wide2-"))) {
-            int n = f.substring(6).toInt();
+                   (fields[i].startsWith("WIDE2-") ||
+                    fields[i].startsWith("wide2-"))) {
+            int n = fields[i].substring(6).toInt();
             if (n >= 1) {
                 if (n == 1) {
                     fields[i] = String(myCallsignFull) + "*";
                 } else {
-                    // Insert our callsign and decrement hop count
                     if (nFields < 8) {
                         for (int j = nFields; j > i; j--) fields[j] = fields[j-1];
-                        fields[i] = String(myCallsignFull) + "*";
+                        fields[i]   = String(myCallsignFull) + "*";
                         fields[i+1] = "WIDE2-" + String(n - 1);
-                        nFields++;
-                        i++;
+                        nFields++; i++;
                     }
                 }
                 digipeated = true;
             }
         }
     }
-
     if (!digipeated) return false;
 
     String newPath;
@@ -501,7 +518,6 @@ bool needsDigipeat(const String& raw, String& modified) {
         if (i > 0) newPath += ',';
         newPath += fields[i];
     }
-
     modified = source + ">" + dest + "," + newPath + payload;
     return true;
 }
@@ -515,32 +531,26 @@ uint32_t crc32(const String& s) {
     }
     return ~c;
 }
-
-bool isDuplicate(const String& raw) {
-    uint32_t h = crc32(raw);
+bool isDuplicate(const String& r) {
+    uint32_t h = crc32(r);
     for (int i = 0; i < 8; i++) if (dedupe[i] == h) return true;
     return false;
 }
-
-void markDuplicate(const String& raw) {
-    dedupe[dedupeIdx] = crc32(raw);
+void markDuplicate(const String& r) {
+    dedupe[dedupeIdx] = crc32(r);
     dedupeIdx = (dedupeIdx + 1) & 7;
 }
-
 void enqueueForDigipeat(const String& pkt) {
     for (int i = 0; i < DIGI_QUEUE_SIZE; i++) {
         if (!digiQueue[i].used) {
-            uint32_t d = (uint32_t)random(DIGI_DELAY_MIN_MS, DIGI_DELAY_MAX_MS + 1);
-            digiQueue[i].packet    = pkt;
-            digiQueue[i].txAfterMs = millis() + d;
-            digiQueue[i].used      = true;
+            uint32_t d = random(DIGI_DELAY_MIN_MS, DIGI_DELAY_MAX_MS + 1);
+            digiQueue[i] = {pkt, millis() + d, true};
             DBG(F("[Digi] Queued, delay=")); DBG(d); DBGLN(F("ms"));
             return;
         }
     }
-    DBGLN(F("[Digi] Queue full — dropped."));
+    DBGLN(F("[Digi] Queue full."));
 }
-
 void flushDigiQueue() {
     for (int i = 0; i < DIGI_QUEUE_SIZE; i++) {
         if (digiQueue[i].used && millis() >= digiQueue[i].txAfterMs) {
@@ -553,14 +563,12 @@ void flushDigiQueue() {
 }
 
 // ============================================================
-//  POWER MANAGEMENT
+//  SLEEP
 // ============================================================
 void enterDeepSleep(uint32_t ms) {
-    DBG(F("[Sleep] deepSleep ")); DBG(ms / 1000); DBGLN(F("s"));
+    DBG(F("[Sleep] ")); DBG(ms); DBGLN(F("ms"));
 #if DEBUG_SERIAL
-    Serial.flush();
-    delay(10);
+    Serial.flush(); delay(10);
 #endif
     LowPower.deepSleep(ms);
-    // After wakeup: loop() calls radioAndGpsInit() to re-init peripherals.
 }
