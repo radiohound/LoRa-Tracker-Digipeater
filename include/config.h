@@ -1,27 +1,23 @@
 #pragma once
 
 // ============================================================
-//  USER CONFIGURATION
+//  USER CONFIGURATION — balloon-digi branch
 //
-//  RF switch, TCXO, GPS wiring, and radio init order verified
-//  against PicoTrack by K6ATV:
-//  https://github.com/radiohound/PicoTrack
+//  Adds MODE_BALLOON_DIGI to the standard modes.
+//  All improvements from main branch (amortised re-init,
+//  MODE_DIGI_CAD) are also present here.
 // ============================================================
 
 // ------------------------------------------------------------
 //  OPERATING MODE
-//   TRACKER_ONLY  – beacon GPS, deep sleep between beacons
-//   TRACKER_DIGI  – beacon GPS + digipeat while awake
-//   DIGI_ONLY     – continuous RX digipeater (~5-6 mA)
-//   DIGI_CAD      – CAD-based digipeater (~0.1 mA, misses first
-//                   packet of each burst but catches all others)
 // ------------------------------------------------------------
 #define MODE_TRACKER_ONLY  0
 #define MODE_TRACKER_DIGI  1
 #define MODE_DIGI_ONLY     2
 #define MODE_DIGI_CAD      3
+#define MODE_BALLOON_DIGI  4
 
-#define OPERATING_MODE     MODE_DIGI_CAD   // <-- change this
+#define OPERATING_MODE     MODE_BALLOON_DIGI
 
 // ------------------------------------------------------------
 //  STATION IDENTIFICATION
@@ -29,7 +25,6 @@
 #define MY_CALLSIGN        "N0CALL"
 #define MY_SSID            9
 #define MY_COMMENT         "STM32WLE5 LoRa APRS"
-
 #define APRS_SYMBOL_TABLE  '/'
 #define APRS_SYMBOL_CODE   '>'
 #define BEACON_PATH        "WIDE1-1"
@@ -40,46 +35,59 @@
 // ------------------------------------------------------------
 #define BEACON_INTERVAL_S   120
 #define GPS_FIX_TIMEOUT_MS  90000UL
-#define GPS_I2C_CLOCK       400000      // Hz; PA9=SCL, PA10=SDA
-#define GPS_POWER_PIN       RADIOLIB_NC // GPIO to cut GPS power,
-                                        // RADIOLIB_NC = always on
+#define GPS_I2C_CLOCK       400000
+#define GPS_POWER_PIN       RADIOLIB_NC
 
 // ------------------------------------------------------------
 //  STANDARD DIGIPEATER SETTINGS
 // ------------------------------------------------------------
 #define DIGI_PATH_1        "WIDE1-1"
-#define DIGI_PATH_2        "WIDE2-1"   // "" = first-hop only
+#define DIGI_PATH_2        "WIDE2-1"
 #define DIGI_DELAY_MIN_MS  80
 #define DIGI_DELAY_MAX_MS  450
 #define DIGI_QUEUE_SIZE    4
 
 // ------------------------------------------------------------
-//  CAD DIGIPEATER SETTINGS  (MODE_DIGI_CAD only)
-//
-//  The digipeater sleeps between CAD scans. When a preamble
-//  is detected it switches to full RX for the NEXT packet.
-//  It misses the triggering packet but catches all subsequent
-//  ones. In a typical APRS environment with retries and
-//  multi-hop paths this is fully acceptable behaviour.
-//
-//  CAD_SCAN_INTERVAL_MS must be < packet air time at your SF.
-//  At SF12/BW125 a full packet is ~3 s, so 2000 ms is safe.
-//
-//  CAD_BATCH_SIZE: number of CAD scans per radio init cycle.
-//  Higher = lower average power (amortises init overhead).
-//  Lower = radio sleeps more deeply between batches.
-//  Recommended: 10-30 (20-60 seconds per init cycle).
+//  CAD DIGIPEATER SETTINGS  (MODE_DIGI_CAD)
 // ------------------------------------------------------------
 #define CAD_SCAN_INTERVAL_MS   2000UL
-#define CAD_BATCH_SIZE         15      // scans before radio sleeps
-                                       // 15 × 2s = 30s per cycle
-
-// Deep sleep between CAD batches. After CAD_BATCH_SIZE scans
-// with no detection, the radio is fully slept and the MCU
-// enters Stop2 for this duration before re-initialising.
-// Longer = lower power. Must be reasonable for your traffic.
-// At 30s you check every ~60s total. At 60s you check every ~90s.
+#define CAD_BATCH_SIZE         15
 #define CAD_BATCH_SLEEP_MS     30000UL
+
+// ------------------------------------------------------------
+//  BALLOON DIGIPEATER SETTINGS  (MODE_BALLOON_DIGI)
+// ------------------------------------------------------------
+
+// Callsign to track (no SSID). "" = accept any balloon.
+#define BALLOON_CALLSIGN        "W6ABC"
+
+// Expected TX interval. Starting value — IIR refines it.
+#define BALLOON_TX_INTERVAL_MS  30000UL
+
+// Acquisition: CAD scan interval. Must be < packet air time.
+// At SF12/BW125 full packet = ~3 s, so 2000 ms is safe.
+#define CAD_ACQ_INTERVAL_MS     2000UL
+
+// Acquisition: scans per radio init cycle (amortises init cost).
+// 15 scans × 2 s = 30 s active, then radio sleeps.
+#define CAD_ACQ_BATCH_SIZE      15
+
+// Acquisition: deep sleep between CAD batches.
+#define CAD_ACQ_BATCH_SLEEP_MS  30000UL
+
+// Tracking: listen window width.
+// Starts wide, narrows as IIR timing confidence grows.
+#define LISTEN_WINDOW_INITIAL_MS  10000UL
+#define LISTEN_WINDOW_MIN_MS       4000UL
+
+// Tracking: packets before window narrows to minimum.
+#define TIMING_CONVERGE_COUNT   20
+
+// Tracking: misses before returning to acquisition.
+#define MAX_MISS_COUNT          3
+
+// IIR smoothing weight (higher = slower adaptation).
+#define IIR_WEIGHT              7
 
 // ------------------------------------------------------------
 //  RADIO SETTINGS
@@ -95,7 +103,6 @@
 #define TCXO_VOLTAGE       1.7f
 
 // RF switch — Ebyte E77-400MBL-01 (verified against PicoTrack)
-// PA6=RF_TXEN, PA7=RF_RXEN, PB3=TX LED
 #define RFSWITCH_PINS   {PA6, PA7, PB3, RADIOLIB_NC, RADIOLIB_NC}
 #define RFSWITCH_TABLE  \
     {STM32WLx::MODE_IDLE,  {LOW,  LOW,  LOW}},  \
@@ -104,7 +111,7 @@
     {STM32WLx::MODE_TX_HP, {HIGH, LOW,  HIGH}}, \
     END_OF_MODE_TABLE
 
-// --- Seeed LoRa-E5 / LoRa-E5 mini ---
+// --- Seeed LoRa-E5 ---
 // #define RFSWITCH_PINS   {PA4, PA5, RADIOLIB_NC, RADIOLIB_NC, RADIOLIB_NC}
 // #define RFSWITCH_TABLE  \
 //     {STM32WLx::MODE_IDLE,  {LOW,  LOW}},  \
@@ -119,14 +126,6 @@
 //     {STM32WLx::MODE_RX,    {HIGH, HIGH, LOW}},   \
 //     {STM32WLx::MODE_TX_LP, {HIGH, HIGH, HIGH}},  \
 //     {STM32WLx::MODE_TX_HP, {HIGH, LOW,  HIGH}},  \
-//     END_OF_MODE_TABLE
-
-// --- RAK3172-E ---
-// #define RFSWITCH_PINS   {PB8, PC13, RADIOLIB_NC, RADIOLIB_NC, RADIOLIB_NC}
-// #define RFSWITCH_TABLE  \
-//     {STM32WLx::MODE_IDLE,  {LOW,  LOW}},  \
-//     {STM32WLx::MODE_RX,    {HIGH, LOW}},  \
-//     {STM32WLx::MODE_TX_LP, {LOW,  HIGH}}, \
 //     END_OF_MODE_TABLE
 
 // ------------------------------------------------------------
