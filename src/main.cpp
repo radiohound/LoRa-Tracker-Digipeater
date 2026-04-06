@@ -24,6 +24,9 @@
 #include <SparkFun_u-blox_GNSS_Arduino_Library.h>
 #include <STM32LowPower.h>
 #include <STM32RTC.h>
+#if BMP280_ENABLED
+#include <Adafruit_BMP280.h>
+#endif
 
 #include "config.h"
 
@@ -52,6 +55,13 @@ static const Module::RfSwitchMode_t rfswitch_table[] = { RFSWITCH_TABLE };
 SFE_UBLOX_GNSS myGPS;
 
 // ============================================================
+//  BMP280
+// ============================================================
+#if BMP280_ENABLED
+Adafruit_BMP280 bmp;
+#endif
+
+// ============================================================
 //  RTC
 // ============================================================
 STM32RTC& rtc = STM32RTC::getInstance();
@@ -73,6 +83,10 @@ static Position lastPos;
 // Avoids repeating the full init sequence unnecessarily.
 static bool radioReady = false;
 static bool gpsReady   = false;
+#if BMP280_ENABLED
+static bool  bmpReady       = false;
+static float bmpSeaLevelHpa = 1013.25f; // updated by calibrateBmpFromGPS()
+#endif
 
 // ============================================================
 //  INTERRUPT FLAGS
@@ -104,6 +118,10 @@ void gpsInit();
 void gpsPowerOn();
 void gpsPowerOff();
 bool waitForFix(uint32_t timeoutMs);
+#if BMP280_ENABLED
+void bmpInit();
+void calibrateBmpFromGPS(int samples);
+#endif
 
 void   sendBeacon();
 String buildAPRSPacket();
@@ -185,7 +203,73 @@ void gpsInit() {
     myGPS.saveConfiguration();
     gpsReady = true;
     DBGLN(F("[GPS] OK"));
+#if BMP280_ENABLED
+    bmpInit();
+#endif
 }
+
+// ============================================================
+//  BMP280 INIT & CALIBRATION
+//
+//  bmpInit() is called from gpsInit() so Wire is already up.
+//  If the sensor is absent, bmpReady stays false and the tracker
+//  falls back to GPS altitude — no configuration change needed.
+//
+//  calibrateBmpFromGPS() collects BMP280_CAL_SAMPLES GPS altitude
+//  readings at 1 Hz immediately after a fix, averages them to
+//  reduce GPS altitude noise, then back-calculates the sea-level
+//  pressure reference the BMP280 needs for absolute altitude.
+//  Formula: seaLevel_hPa = measured_hPa / (1 - alt_m/44330)^5.255
+// ============================================================
+#if BMP280_ENABLED
+void bmpInit() {
+    if (bmpReady) return;   // already initialised — survives deep sleep
+    if (!bmp.begin(BMP280_I2C_ADDR)) {
+        DBGLN(F("[BMP] Not found — using GPS altitude."));
+        return;
+    }
+    bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,
+                    Adafruit_BMP280::SAMPLING_X2,    // temperature (needed internally)
+                    Adafruit_BMP280::SAMPLING_X16,   // pressure — max oversampling
+                    Adafruit_BMP280::FILTER_X16,     // IIR filter to smooth readings
+                    Adafruit_BMP280::STANDBY_MS_500);
+    bmpReady = true;
+    DBGLN(F("[BMP] OK"));
+}
+
+void calibrateBmpFromGPS(int samples) {
+    DBG(F("[BMP] Calibrating from GPS ("));
+    DBG(samples); DBGLN(F(" samples)..."));
+
+    float   altSum = 0;
+    int     count  = 0;
+
+    for (int i = 0; i < samples; i++) {
+        // Wait up to 1.1 s for the next 1 Hz GPS position update.
+        uint32_t t = millis();
+        while (millis() - t < 1100) {
+            myGPS.checkUblox();
+            delay(10);
+        }
+        if (myGPS.getPVT() && myGPS.getFixType() != 0 && myGPS.getSIV() > 3) {
+            altSum += myGPS.getAltitudeMSL() / 1000.0f;
+            count++;
+        }
+    }
+
+    if (count == 0) {
+        DBGLN(F("[BMP] Cal failed — no valid GPS samples."));
+        return;
+    }
+
+    float avgAltM  = altSum / count;
+    float pressHpa = bmp.readPressure() / 100.0f;
+    bmpSeaLevelHpa = pressHpa / powf(1.0f - avgAltM / 44330.0f, 5.255f);
+
+    DBG(F("[BMP] avgAlt=")); DBG(avgAltM);
+    DBG(F("m  seaLevel=")); DBG(bmpSeaLevelHpa); DBGLN(F("hPa"));
+}
+#endif
 
 // ============================================================
 //  SETUP
@@ -410,11 +494,17 @@ bool waitForFix(uint32_t timeoutMs) {
 //  BEACON
 // ============================================================
 String buildAPRSPacket() {
+#if BMP280_ENABLED
+    // Use BMP280 altitude if calibrated; fall back to GPS altitude otherwise.
+    float altM = bmpReady ? bmp.readAltitude(bmpSeaLevelHpa) : lastPos.altM;
+#else
+    float altM = lastPos.altM;
+#endif
     String gpsData = APRSPacketLib::encodeGPSIntoBase91(
         lastPos.lat, lastPos.lon,
         lastPos.course, lastPos.speed,
         String(APRS_SYMBOL_CODE),
-        true, (int)(lastPos.altM * 3.28084f));
+        true, (int)(altM * 3.28084f));
     return APRSPacketLib::generateBase91GPSBeaconPacket(
         String(myCallsignFull),
         String(APRS_DESTINATION),
@@ -431,6 +521,11 @@ void sendBeacon() {
         }
         DBGLN(F("[Beacon] Using last known position."));
     }
+#if BMP280_ENABLED
+    // Calibrate BMP280 sea-level pressure reference from fresh GPS fix.
+    // Skipped automatically if no BMP280 was detected at init.
+    if (bmpReady) calibrateBmpFromGPS(BMP280_CAL_SAMPLES);
+#endif
     radioTransmit(buildAPRSPacket());
 }
 

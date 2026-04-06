@@ -130,6 +130,23 @@
 //     END_OF_MODE_TABLE
 
 // ------------------------------------------------------------
+//  BMP280 BAROMETRIC ALTIMETER  (optional — on the same I2C bus as GPS)
+//
+//  When enabled and a BMP280 is detected, altitude is taken from
+//  the barometer instead of GPS. GPS altitude is used immediately
+//  after each fix to calibrate the BMP280's sea-level pressure
+//  reference (BMP280_CAL_SAMPLES readings averaged at 1 Hz).
+//  If no BMP280 is found at runtime the tracker falls back to
+//  GPS altitude automatically — no code change needed.
+//
+//  Set BMP280_ENABLED to 0 to exclude all BMP280 code entirely.
+// ------------------------------------------------------------
+#define BMP280_ENABLED     1       // 1 = use if present, 0 = disable
+#define BMP280_I2C_ADDR    0x76    // 0x76 (SDO→GND) or 0x77 (SDO→VCC)
+#define BMP280_CAL_SAMPLES 8       // GPS altitude samples to average
+                                   // for sea-level pressure calibration
+
+// ------------------------------------------------------------
 //  DEBUG
 // ------------------------------------------------------------
 #define DEBUG_SERIAL       1
