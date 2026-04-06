@@ -1,15 +1,25 @@
-# STM32WLE5 LoRa APRS — balloon-digi branch
+# STM32WLE5 LoRa APRS — Ground Station Balloon Digipeater
 
-This branch adds `MODE_BALLOON_DIGI` to the standard tracker/digipeater
-firmware. It is designed for a fixed ground station that tracks and
-digipeats a single high-altitude balloon over a 2–4 hour flight, with
-extremely low power consumption between flights.
+This is the **`balloon-digi`** branch. It adds `MODE_BALLOON_DIGI` — a
+low-power ground station digipeater that autonomously acquires and tracks
+a single high-altitude balloon, digipeating its APRS packets for the
+duration of the flight.
 
-All improvements from the **main** branch are also present here, including
-`MODE_DIGI_CAD` and the amortised radio re-init fix.
+The ground station runs unattended on two AA batteries. It draws only
+~0.04 mA while waiting for the balloon to launch, then automatically
+switches to a scheduled RX/digipeat cycle once the balloon is heard.
 
-For the standard tracker and digipeater without balloon tracking, see the
-**main** branch.
+---
+
+## Repository branches
+
+| Branch | Purpose |
+|--------|---------|
+| **`main`** | General-purpose LoRa APRS tracker and digipeater. Four operating modes: `TRACKER_ONLY`, `TRACKER_DIGI`, `DIGI_ONLY`, `DIGI_CAD`. Use this for a handheld tracker, a fixed digipeater, or a combined tracker+digi node. |
+| **`balloon-digi`** | This branch. Adds `MODE_BALLOON_DIGI` for a dedicated ground station that tracks and digipeats a specific balloon callsign. Includes all modes from `main`. |
+
+Both branches target the **Ebyte E77-400MBL-01** (STM32WLE5CC) and are
+compatible with the ST Nucleo-WL55JC and other STM32WLE5-based modules.
 
 ---
 
