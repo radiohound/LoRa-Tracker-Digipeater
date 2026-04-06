@@ -87,6 +87,12 @@ static bool gpsReady   = false;
 static bool  bmpReady       = false;
 static float bmpSeaLevelHpa = 1013.25f; // updated by calibrateBmpFromGPS()
 #endif
+#if CUTDOWN_ENABLED
+enum CutdownState { CUTDOWN_IDLE, CUTDOWN_ARMED, CUTDOWN_TRIGGERED };
+static CutdownState cutdownState     = CUTDOWN_IDLE;
+static float        cutdownLaunchAlt = 0.0f; // altitude at first valid fix
+static int          cutdownConfirm   = 0;    // consecutive readings above threshold
+#endif
 
 // ============================================================
 //  INTERRUPT FLAGS
@@ -121,6 +127,9 @@ bool waitForFix(uint32_t timeoutMs);
 #if BMP280_ENABLED
 void bmpInit();
 void calibrateBmpFromGPS(int samples);
+#endif
+#if CUTDOWN_ENABLED
+void checkCutdown(float altM);
 #endif
 
 void   sendBeacon();
@@ -272,6 +281,72 @@ void calibrateBmpFromGPS(int samples) {
 #endif
 
 // ============================================================
+//  CUTDOWN
+//
+//  Called from sendBeacon() with the current altitude in metres.
+//  State machine: IDLE → ARMED → TRIGGERED (one-way, no reset).
+//
+//  IDLE:      records launch altitude on first call, then waits
+//             until the balloon has ascended CUTDOWN_ARM_ASCENT_M
+//             above it before arming. This prevents triggering at
+//             a high-altitude launch site or from a noisy reading
+//             at ground level.
+//
+//  ARMED:     counts consecutive readings at or above
+//             CUTDOWN_ALTITUDE_M. Counter resets on any reading
+//             below the threshold, so a transient spike cannot
+//             trigger the cutdown.
+//
+//  TRIGGERED: drives CUTDOWN_PIN HIGH, blocks for CUTDOWN_PULSE_MS,
+//             then drives it LOW. The pin is guaranteed to return
+//             LOW before the function returns, so deep sleep and
+//             further beacons are not affected. Will not fire again.
+// ============================================================
+#if CUTDOWN_ENABLED
+void checkCutdown(float altM) {
+    if (cutdownState == CUTDOWN_TRIGGERED) return;
+
+    if (cutdownState == CUTDOWN_IDLE) {
+        if (cutdownLaunchAlt == 0.0f) {
+            // Record altitude at first valid fix as the launch baseline.
+            cutdownLaunchAlt = altM;
+            DBG(F("[Cutdown] Launch alt=")); DBG(altM); DBGLN(F("m"));
+            return;
+        }
+        if (altM >= cutdownLaunchAlt + CUTDOWN_ARM_ASCENT_M) {
+            cutdownState = CUTDOWN_ARMED;
+            DBGLN(F("[Cutdown] ARMED"));
+        }
+        return;
+    }
+
+    // ARMED — watch for CUTDOWN_CONFIRM_COUNT consecutive readings
+    // at or above the target altitude.
+    if (altM >= CUTDOWN_ALTITUDE_M) {
+        cutdownConfirm++;
+        DBG(F("[Cutdown] Confirm ")); DBG(cutdownConfirm);
+        DBG(F("/")); DBGLN(CUTDOWN_CONFIRM_COUNT);
+
+        if (cutdownConfirm >= CUTDOWN_CONFIRM_COUNT) {
+            // All confirmations passed — fire the cutdown pulse.
+            DBGLN(F("[Cutdown] FIRING"));
+            digitalWrite(CUTDOWN_PIN, HIGH);
+            delay(CUTDOWN_PULSE_MS);        // blocking: pulse must complete
+            digitalWrite(CUTDOWN_PIN, LOW);
+            cutdownState = CUTDOWN_TRIGGERED;
+            DBGLN(F("[Cutdown] Pulse complete — pin LOW"));
+        }
+    } else {
+        // Reading dropped below threshold — reset the confirmation counter.
+        if (cutdownConfirm > 0) {
+            DBGLN(F("[Cutdown] Below threshold — resetting confirm count"));
+            cutdownConfirm = 0;
+        }
+    }
+}
+#endif
+
+// ============================================================
 //  SETUP
 // ============================================================
 void setup() {
@@ -288,6 +363,10 @@ void setup() {
 #if GPS_POWER_PIN != RADIOLIB_NC
     pinMode(GPS_POWER_PIN, OUTPUT);
     digitalWrite(GPS_POWER_PIN, LOW);
+#endif
+#if CUTDOWN_ENABLED
+    pinMode(CUTDOWN_PIN, OUTPUT);
+    digitalWrite(CUTDOWN_PIN, LOW);
 #endif
 
     radioInit();
@@ -525,6 +604,17 @@ void sendBeacon() {
     // Calibrate BMP280 sea-level pressure reference from fresh GPS fix.
     // Skipped automatically if no BMP280 was detected at init.
     if (bmpReady) calibrateBmpFromGPS(BMP280_CAL_SAMPLES);
+#endif
+#if CUTDOWN_ENABLED
+    {
+        // Use BMP280 altitude if available, otherwise GPS altitude.
+#if BMP280_ENABLED
+        float altM = bmpReady ? bmp.readAltitude(bmpSeaLevelHpa) : lastPos.altM;
+#else
+        float altM = lastPos.altM;
+#endif
+        checkCutdown(altM);
+    }
 #endif
     radioTransmit(buildAPRSPacket());
 }

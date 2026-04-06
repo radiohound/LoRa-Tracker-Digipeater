@@ -147,6 +147,34 @@
                                    // for sea-level pressure calibration
 
 // ------------------------------------------------------------
+//  CUTDOWN  (tracker modes only — TRACKER_ONLY / TRACKER_DIGI)
+//
+//  When the confirmed altitude reaches CUTDOWN_ALTITUDE_M, the
+//  cutdown pin pulses HIGH for CUTDOWN_PULSE_MS milliseconds then
+//  returns LOW. This fires once only — the system will not trigger
+//  again even if altitude readings remain high.
+//
+//  Safeguards:
+//  - CUTDOWN_ARM_ASCENT_M: the balloon must rise this many metres
+//    above its launch altitude before the system arms. Prevents
+//    triggering at a high-altitude launch site or from a ground-
+//    level noise spike.
+//  - CUTDOWN_CONFIRM_COUNT: this many consecutive altitude readings
+//    must all be above CUTDOWN_ALTITUDE_M before the pin fires.
+//    The counter resets if any reading falls back below the threshold.
+//  - CUTDOWN_PULSE_MS: pin is held HIGH for exactly this duration
+//    (blocking), then driven LOW before any further code runs.
+//
+//  Set CUTDOWN_ENABLED to 0 to exclude all cutdown code entirely.
+// ------------------------------------------------------------
+#define CUTDOWN_ENABLED        0          // 1 = enable, 0 = disable
+#define CUTDOWN_PIN            PA0        // GPIO pin to pulse at cutdown
+#define CUTDOWN_ALTITUDE_M     30000      // trigger altitude in metres MSL
+#define CUTDOWN_ARM_ASCENT_M   500        // metres above launch alt before armed
+#define CUTDOWN_CONFIRM_COUNT  5          // consecutive readings required
+#define CUTDOWN_PULSE_MS       5000       // pin HIGH duration in milliseconds
+
+// ------------------------------------------------------------
 //  DEBUG
 // ------------------------------------------------------------
 #define DEBUG_SERIAL       1
