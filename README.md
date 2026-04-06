@@ -10,6 +10,15 @@ firmware by K6ATV for RF switch pinout, TCXO voltage, and radio init sequence.
 
 ---
 
+## Repository branches
+
+| Branch | Purpose |
+|--------|---------|
+| **`main`** | General-purpose LoRa APRS tracker and digipeater. Four operating modes: `TRACKER_ONLY`, `TRACKER_DIGI`, `DIGI_ONLY`, `DIGI_CAD`. |
+| **`balloon-digi`** | Adds `MODE_BALLOON_DIGI` — a low-power ground station digipeater that autonomously acquires and tracks a specific balloon callsign. |
+
+---
+
 ## File overview
 
 ```
@@ -179,6 +188,70 @@ Pinout varies by module — uncomment the right block in `config.h`.
   reduce collision probability with other digipeaters.
 - An 8-element CRC32 ring buffer suppresses duplicate packets.
 - Own beacon packets are never digipeated.
+
+---
+
+## BMP280 barometric altimeter (optional)
+
+A BMP280 pressure sensor can be added to the same I2C bus as the GPS
+(PA9 = SCL, PA10 = SDA) to improve altitude accuracy. GPS altitude is
+typically accurate to ±10–20 m; a barometer with a good sea-level
+reference is significantly more stable.
+
+Enable in `config.h`:
+
+```c
+#define BMP280_ENABLED     1       // 1 = use if present, 0 = disable
+#define BMP280_I2C_ADDR    0x76    // 0x76 (SDO→GND) or 0x77 (SDO→VCC)
+#define BMP280_CAL_SAMPLES 8       // GPS altitude readings to average
+```
+
+**How calibration works:** immediately after each GPS fix, the firmware
+takes `BMP280_CAL_SAMPLES` altitude readings from the GPS at 1 Hz,
+averages them to reduce GPS noise, then back-calculates the sea-level
+pressure reference the BMP280 needs to report accurate absolute altitude.
+From that point until the next fix, all transmitted altitude values come
+from the barometer.
+
+If no BMP280 is detected at boot the firmware falls back to GPS altitude
+automatically — no configuration change is needed.
+
+---
+
+## Cutdown (tracker modes only)
+
+A GPIO pin can be pulsed HIGH at a set altitude to trigger a cutdown
+mechanism (nichrome wire, pyro charge, servo, etc.). Intended for
+balloon payloads running `TRACKER_ONLY` or `TRACKER_DIGI`.
+
+Enable and configure in `config.h`:
+
+```c
+#define CUTDOWN_ENABLED        1
+#define CUTDOWN_PIN            PA0
+#define CUTDOWN_ALTITUDE_M     30000   // metres MSL
+#define CUTDOWN_ARM_ASCENT_M   500     // metres above launch before armed
+#define CUTDOWN_CONFIRM_COUNT  5       // consecutive readings required
+#define CUTDOWN_PULSE_MS       5000    // pin HIGH duration in milliseconds
+```
+
+**Safeguards:**
+- **Arming delay** — the system records altitude at the first valid GPS fix
+  (launch altitude) and will not arm until the balloon has risen
+  `CUTDOWN_ARM_ASCENT_M` above that baseline. Prevents triggering at a
+  high-altitude launch site or from a noisy reading on the ground.
+- **Confirmation count** — once armed, `CUTDOWN_CONFIRM_COUNT` consecutive
+  altitude readings must all be at or above `CUTDOWN_ALTITUDE_M`. The
+  counter resets if any reading falls below the threshold, so a single
+  spike cannot trigger the cutdown.
+- **Timed pulse** — the pin is held HIGH for exactly `CUTDOWN_PULSE_MS`
+  milliseconds (blocking), then driven LOW before any further code runs.
+  The pin is guaranteed to return LOW regardless of what happens next.
+- **One-shot** — fires once only. The system will not trigger again even
+  if altitude readings remain above the threshold.
+
+Altitude source follows the same priority as the beacon: BMP280 if
+detected and calibrated, otherwise GPS altitude.
 
 ---
 
