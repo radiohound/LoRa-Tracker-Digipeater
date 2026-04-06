@@ -1,181 +1,156 @@
+Content is user-generated and unverified.
 #pragma once
 
 // ============================================================
-//  USER CONFIGURATION
+// STM32WLE5 LoRa APRS Tracker + Digipeater + Horus Binary
+// Target: Ebyte E77-400MBL-01 / E77-900MBL-01 (STM32WLE5CC)
 //
-//  RF switch, TCXO, GPS wiring, and radio init order verified
-//  against PicoTrack by K6ATV:
-//  https://github.com/radiohound/PicoTrack
+// RF switch / GPS wiring verified against PicoTrack (K6ATV):
+//   https://github.com/radiohound/PicoTrack
+//   PA9 = I2C SCL, PA10 = I2C SDA
 // ============================================================
 
-// ------------------------------------------------------------
-//  OPERATING MODE
-//   TRACKER_ONLY  – beacon GPS, deep sleep between beacons
-//   TRACKER_DIGI  – beacon GPS + digipeat while awake
-//   DIGI_ONLY     – continuous RX digipeater (~5-6 mA)
-//   DIGI_CAD      – Channel Activity Detection (CAD)-based digipeater (~0.1 mA, misses first
-//                   packet of each burst but catches all others)
-// ------------------------------------------------------------
-#define MODE_TRACKER_ONLY  0
-#define MODE_TRACKER_DIGI  1
-#define MODE_DIGI_ONLY     2
-#define MODE_DIGI_CAD      3
+// ============================================================
+// DEBUG
+// ============================================================
+#define DEBUG_SERIAL        1
+#define DEBUG_BAUD          115200
 
-#define OPERATING_MODE     MODE_DIGI_CAD   // <-- change this
+// ============================================================
+// OPERATING MODE — pick exactly one
+// ============================================================
+#define MODE_TRACKER_ONLY   1   // TX beacon, sleep, repeat
+#define MODE_TRACKER_DIGI   2   // TX beacon, then RX/digipeat until next interval
+#define MODE_DIGI_ONLY      3   // RX/digipeat continuously, no GPS/beacon
+#define MODE_DIGI_CAD       4   // Low-power CAD digipeater
 
-// ------------------------------------------------------------
-//  STATION IDENTIFICATION
-// ------------------------------------------------------------
-#define MY_CALLSIGN        "N0CALL"
-#define MY_SSID            9
-#define MY_COMMENT         "STM32WLE5 LoRa APRS"
+#define OPERATING_MODE      MODE_TRACKER_ONLY
 
-#define APRS_SYMBOL_TABLE  '/'
-#define APRS_SYMBOL_CODE   '>'
-#define BEACON_PATH        "WIDE1-1"
-#define APRS_DESTINATION   "APZP01"
+// ============================================================
+// IDENTITY
+// ============================================================
+#define MY_CALLSIGN         "N0CALL"
+#define MY_SSID             11              // 11 = balloon
+#define MY_COMMENT          " Horus/APRS Tracker"
 
-// ------------------------------------------------------------
-//  TRACKER SETTINGS
-// ------------------------------------------------------------
-#define BEACON_INTERVAL_S   120
-#define GPS_FIX_TIMEOUT_MS  90000UL
-#define GPS_I2C_CLOCK       400000      // Hz; PA9=SCL, PA10=SDA
-#define GPS_POWER_PIN       RADIOLIB_NC // GPIO to cut GPS power,
-                                        // RADIOLIB_NC = always on
+// ============================================================
+// APRS
+// ============================================================
+#define APRS_DESTINATION    "APRS"
+#define BEACON_PATH         "WIDE1-1,WIDE2-1"
+#define APRS_SYMBOL_TABLE   '/'
+#define APRS_SYMBOL_CODE    'O'             // 'O' = balloon
 
-// ------------------------------------------------------------
-//  STANDARD DIGIPEATER SETTINGS
-// ------------------------------------------------------------
-#define DIGI_PATH_1        "WIDE1-1"
-#define DIGI_PATH_2        "WIDE2-1"   // "" = first-hop only
-#define DIGI_DELAY_MIN_MS  80
-#define DIGI_DELAY_MAX_MS  450
-#define DIGI_QUEUE_SIZE    4
+// ============================================================
+// LORA (APRS)
+// ============================================================
+#define LORA_FREQ           433.775         // MHz — EU LoRa APRS
+#define LORA_BW             125.0           // kHz
+#define LORA_SF             12
+#define LORA_CR             5
+#define LORA_TX_POWER       22              // dBm
+#define LORA_OCP_MA         140             // over-current protection (mA)
+#define LORA_SYNC_WORD      0x12            // LoRa APRS sync word
+#define LORA_PREAMBLE       8
 
-// ------------------------------------------------------------
-//  CAD DIGIPEATER SETTINGS  (MODE_DIGI_CAD only)
+// ============================================================
+// TCXO
+// E77 modules with SN >= 3202995 use a TCXO (1.8 V).
+// Older crystal modules: remove setTCXO() in radioInit() and
+// use firmware labelled "-xtal".
+// ============================================================
+#define TCXO_VOLTAGE        1.8             // volts
+
+// ============================================================
+// BEACON
+// ============================================================
+#define BEACON_INTERVAL_S   60              // seconds between beacons
+
+// ============================================================
+// GPS
+// SparkFun u-blox library over I2C.
+// PA9 = SCL, PA10 = SDA (E77 MBL dev board standard wiring).
+// ============================================================
+#define GPS_I2C_CLOCK       400000          // 400 kHz fast mode
+#define GPS_FIX_TIMEOUT_MS  120000          // 2 min max wait for fix
+#define GPS_POWER_PIN       RADIOLIB_NC     // set to a pin if GPS has power switch
+
+// ============================================================
+// BMP280 (OPTIONAL)
+// Set to 1 if a BMP280 is on the I2C bus.
+// If enabled but absent, bmpReady stays false and the code
+// silently falls back to GPS altitude — no other change needed.
 //
-//  The digipeater sleeps between CAD scans. When a preamble
-//  is detected it switches to full RX for the NEXT packet.
-//  It misses the triggering packet but catches all subsequent
-//  ones. In a typical APRS environment with retries and
-//  multi-hop paths this is fully acceptable behaviour.
+// Standard I2C addresses:
+//   0x76 — SDO pulled LOW (most breakouts)
+//   0x77 — SDO pulled HIGH
+// ============================================================
+#define BMP280_ENABLED      1
+#define BMP280_I2C_ADDR     0x76
+#define BMP280_CAL_SAMPLES  5               // GPS samples averaged for pressure cal
+
+// ============================================================
+// HORUS BINARY v2 (OPTIONAL)
+// Set to 1 to transmit a Horus Binary v2 4FSK packet after
+// each APRS beacon. Compatible with TRACKER_ONLY and
+// TRACKER_DIGI operating modes. Has no effect in DIGI_ONLY
+// or DIGI_CAD as those modes never call sendBeacon().
 //
-//  CAD_SCAN_INTERVAL_MS must be < packet air time at your SF.
-//  At SF12/BW125 a full packet is ~3 s, so 2000 ms is safe.
+// The radio is re-initialised to FSK mode, Horus is
+// transmitted, then re-initialised back to LoRa — ready
+// for RX/sleep as the operating mode requires.
 //
-//  CAD_BATCH_SIZE: number of CAD scans per radio init cycle.
-//  Higher = lower average power (amortises init overhead).
-//  Lower = radio sleeps more deeply between batches.
-//  Recommended: 10-30 (20-60 seconds per init cycle).
-// ------------------------------------------------------------
-#define CAD_SCAN_INTERVAL_MS   2000UL
-#define CAD_BATCH_SIZE         15      // scans before radio sleeps
-                                       // 15 × 2s = 30s per cycle
+// Register a payload ID at:
+//   https://github.com/projecthorus/horusdemodlib/blob/master/payload_id_list.txt
+// Use 256 (4FSKTEST-V2) for bench testing only.
+//
+// Required: copy horus_l2.h and horus_l2.cpp from
+//   https://github.com/projecthorus/horusbinary_radiolib
+// into this src/ folder.
+// ============================================================
+#define HORUS_ENABLED       1
+#define HORUS_PAYLOAD_ID    256             // replace with registered ID for flights
+#define HORUS_FREQ          434.200         // MHz
+#define HORUS_FSK4_BAUD     100             // symbols/sec
+#define HORUS_FSK4_SPACING  270             // Hz between tones
 
-// Deep sleep between CAD batches. After CAD_BATCH_SIZE scans
-// with no detection, the radio is fully slept and the MCU
-// enters Stop2 for this duration before re-initialising.
-// Longer = lower power. Must be reasonable for your traffic.
-// At 30s you check every ~60s total. At 60s you check every ~90s.
-#define CAD_BATCH_SLEEP_MS     30000UL
+// ============================================================
+// CUTDOWN (OPTIONAL)
+// ============================================================
+#define CUTDOWN_ENABLED     0
+#define CUTDOWN_PIN         PA0
+#define CUTDOWN_ALTITUDE_M  30000
+#define CUTDOWN_ARM_ASCENT_M 500
+#define CUTDOWN_CONFIRM_COUNT 3
+#define CUTDOWN_PULSE_MS    5000
 
-// ------------------------------------------------------------
-//  RADIO SETTINGS
-// ------------------------------------------------------------
-#define LORA_FREQ          433.775
-#define LORA_BW            125.0
-#define LORA_SF            12
-#define LORA_CR            5
-#define LORA_PREAMBLE      8
-#define LORA_SYNC_WORD     0x12
-#define LORA_TX_POWER      22
-#define LORA_OCP_MA        140
-#define TCXO_VOLTAGE       1.7f
+// ============================================================
+// DIGIPEATER
+// ============================================================
+#define DIGI_PATH_1         "WIDE1-1"
+#define DIGI_PATH_2         "WIDE2"
+#define DIGI_QUEUE_SIZE     4
+#define DIGI_DELAY_MIN_MS   2000
+#define DIGI_DELAY_MAX_MS   5000
 
-// RF switch — Ebyte E77-400MBL-01 (verified against PicoTrack)
-// PA6=RF_TXEN, PA7=RF_RXEN, PB3=TX LED
-#define RFSWITCH_PINS   {PA6, PA7, PB3, RADIOLIB_NC, RADIOLIB_NC}
-#define RFSWITCH_TABLE  \
-    {STM32WLx::MODE_IDLE,  {LOW,  LOW,  LOW}},  \
-    {STM32WLx::MODE_RX,    {LOW,  HIGH, LOW}},  \
-    {STM32WLx::MODE_TX_LP, {HIGH, LOW,  HIGH}}, \
-    {STM32WLx::MODE_TX_HP, {HIGH, LOW,  HIGH}}, \
+// ============================================================
+// CAD DIGIPEATER
+// ============================================================
+#define CAD_BATCH_SIZE      15
+#define CAD_SCAN_INTERVAL_MS 2000
+#define CAD_BATCH_SLEEP_MS  30000
+
+// ============================================================
+// RF SWITCH — E77 MBL board
+// Verified against PicoTrack / mLRS E77 MBL documentation.
+// Update to match your carrier board schematic if different.
+// ============================================================
+#define RFSWITCH_PINS \
+    { PC3, PC4, RADIOLIB_NC }
+
+#define RFSWITCH_TABLE \
+    { STM32WLx::MODE_IDLE,  { LOW,  LOW  } }, \
+    { STM32WLx::MODE_RX,    { HIGH, LOW  } }, \
+    { STM32WLx::MODE_TX_LP, { LOW,  HIGH } }, \
+    { STM32WLx::MODE_TX_HP, { LOW,  HIGH } }, \
     END_OF_MODE_TABLE
-
-// --- Seeed LoRa-E5 / LoRa-E5 mini ---
-// #define RFSWITCH_PINS   {PA4, PA5, RADIOLIB_NC, RADIOLIB_NC, RADIOLIB_NC}
-// #define RFSWITCH_TABLE  \
-//     {STM32WLx::MODE_IDLE,  {LOW,  LOW}},  \
-//     {STM32WLx::MODE_RX,    {HIGH, LOW}},  \
-//     {STM32WLx::MODE_TX_HP, {LOW,  HIGH}}, \
-//     END_OF_MODE_TABLE
-
-// --- ST Nucleo-WL55JC ---
-// #define RFSWITCH_PINS   {PC3, PC4, PC5, RADIOLIB_NC, RADIOLIB_NC}
-// #define RFSWITCH_TABLE  \
-//     {STM32WLx::MODE_IDLE,  {LOW,  LOW,  LOW}},  \
-//     {STM32WLx::MODE_RX,    {HIGH, HIGH, LOW}},   \
-//     {STM32WLx::MODE_TX_LP, {HIGH, HIGH, HIGH}},  \
-//     {STM32WLx::MODE_TX_HP, {HIGH, LOW,  HIGH}},  \
-//     END_OF_MODE_TABLE
-
-// --- RAK3172-E ---
-// #define RFSWITCH_PINS   {PB8, PC13, RADIOLIB_NC, RADIOLIB_NC, RADIOLIB_NC}
-// #define RFSWITCH_TABLE  \
-//     {STM32WLx::MODE_IDLE,  {LOW,  LOW}},  \
-//     {STM32WLx::MODE_RX,    {HIGH, LOW}},  \
-//     {STM32WLx::MODE_TX_LP, {LOW,  HIGH}}, \
-//     END_OF_MODE_TABLE
-
-// ------------------------------------------------------------
-//  BMP280 BAROMETRIC ALTIMETER  (optional — on the same I2C bus as GPS)
-//
-//  When enabled and a BMP280 is detected, altitude is taken from
-//  the barometer instead of GPS. GPS altitude is used immediately
-//  after each fix to calibrate the BMP280's sea-level pressure
-//  reference (BMP280_CAL_SAMPLES readings averaged at 1 Hz).
-//  If no BMP280 is found at runtime the tracker falls back to
-//  GPS altitude automatically — no code change needed.
-//
-//  Set BMP280_ENABLED to 0 to exclude all BMP280 code entirely.
-// ------------------------------------------------------------
-#define BMP280_ENABLED     1       // 1 = use if present, 0 = disable
-#define BMP280_I2C_ADDR    0x76    // 0x76 (SDO→GND) or 0x77 (SDO→VCC)
-#define BMP280_CAL_SAMPLES 8       // GPS altitude samples to average
-                                   // for sea-level pressure calibration
-
-// ------------------------------------------------------------
-//  CUTDOWN  (tracker modes only — TRACKER_ONLY / TRACKER_DIGI)
-//
-//  When the confirmed altitude reaches CUTDOWN_ALTITUDE_M, the
-//  cutdown pin pulses HIGH for CUTDOWN_PULSE_MS milliseconds then
-//  returns LOW. This fires once only — the system will not trigger
-//  again even if altitude readings remain high.
-//
-//  Safeguards:
-//  - CUTDOWN_ARM_ASCENT_M: the balloon must rise this many metres
-//    above its launch altitude before the system arms. Prevents
-//    triggering at a high-altitude launch site or from a ground-
-//    level noise spike.
-//  - CUTDOWN_CONFIRM_COUNT: this many consecutive altitude readings
-//    must all be above CUTDOWN_ALTITUDE_M before the pin fires.
-//    The counter resets if any reading falls back below the threshold.
-//  - CUTDOWN_PULSE_MS: pin is held HIGH for exactly this duration
-//    (blocking), then driven LOW before any further code runs.
-//
-//  Set CUTDOWN_ENABLED to 0 to exclude all cutdown code entirely.
-// ------------------------------------------------------------
-#define CUTDOWN_ENABLED        0          // 1 = enable, 0 = disable
-#define CUTDOWN_PIN            PA0        // GPIO pin to pulse at cutdown
-#define CUTDOWN_ALTITUDE_M     30000      // trigger altitude in metres MSL
-#define CUTDOWN_ARM_ASCENT_M   500        // metres above launch alt before armed
-#define CUTDOWN_CONFIRM_COUNT  5          // consecutive readings required
-#define CUTDOWN_PULSE_MS       5000       // pin HIGH duration in milliseconds
-
-// ------------------------------------------------------------
-//  DEBUG
-// ------------------------------------------------------------
-#define DEBUG_SERIAL       1
-#define DEBUG_BAUD         115200
