@@ -97,8 +97,8 @@ void radioSleep();
 void radioStartRx();
 void radioStartCad();
 bool radioTransmit(const String& tnc2);
-void IRAM_ATTR onRadioRx();
-void IRAM_ATTR onRadioCad();
+void onRadioRx();
+void onRadioCad();
 
 void gpsInit();
 void gpsPowerOn();
@@ -367,8 +367,8 @@ bool radioTransmit(const String& tnc2) {
     return true;
 }
 
-void IRAM_ATTR onRadioRx()  { radioRxFlag  = true; }
-void IRAM_ATTR onRadioCad() { radioCadFlag = true; }
+void onRadioRx()  { radioRxFlag  = true; }
+void onRadioCad() { radioCadFlag = true; }
 
 // ============================================================
 //  GPS HELPERS
@@ -410,18 +410,17 @@ bool waitForFix(uint32_t timeoutMs) {
 //  BEACON
 // ============================================================
 String buildAPRSPacket() {
-    APRSPacket pkt;
-    pkt.source    = String(myCallsignFull);
-    pkt.path      = String(BEACON_PATH);
-    pkt.symbol    = APRS_SYMBOL_CODE;
-    pkt.overlay   = APRS_SYMBOL_TABLE;
-    pkt.latitude  = lastPos.lat;
-    pkt.longitude = lastPos.lon;
-    pkt.altitude  = (int)(lastPos.altM * 3.28084f);
-    pkt.speed     = lastPos.speed;
-    pkt.course    = lastPos.course;
-    pkt.comment   = String(MY_COMMENT);
-    return APRSPacketLib::generatePositionPacket(pkt);
+    String gpsData = APRSPacketLib::encodeGPSIntoBase91(
+        lastPos.lat, lastPos.lon,
+        lastPos.course, lastPos.speed,
+        String(APRS_SYMBOL_CODE),
+        true, (int)(lastPos.altM * 3.28084f));
+    return APRSPacketLib::generateBase91GPSBeaconPacket(
+        String(myCallsignFull),
+        String(APRS_DESTINATION),
+        String(BEACON_PATH),
+        String(APRS_SYMBOL_TABLE),
+        gpsData) + MY_COMMENT;
 }
 
 void sendBeacon() {
@@ -461,21 +460,34 @@ void processRxPacket() {
     radioStartRx();
 }
 
+// Returns true if this packet should be digipeated, and writes the
+// modified TNC2 string (with our callsign inserted into the path) to
+// `modified`. Returns false if the packet is from us, already fully
+// digipeated, or has no path we handle.
 bool needsDigipeat(const String& raw, String& modified) {
+    // Split "SOURCE>DEST,PATH:PAYLOAD" at the first colon.
     int colonIdx = raw.indexOf(':');
     if (colonIdx < 0) return false;
     String header  = raw.substring(0, colonIdx);
-    String payload = raw.substring(colonIdx);
-    int arrowIdx   = header.indexOf('>');
+    String payload = raw.substring(colonIdx);  // includes the ':'
+
+    // Split header into source and "DEST,PATH".
+    int arrowIdx = header.indexOf('>');
     if (arrowIdx < 0) return false;
     String source      = header.substring(0, arrowIdx);
     String destAndPath = header.substring(arrowIdx + 1);
+
+    // Never digipeat our own transmissions.
     if (source.startsWith(MY_CALLSIGN)) return false;
+
+    // Separate destination callsign from the path fields.
     int commaIdx = destAndPath.indexOf(',');
     if (commaIdx < 0) return false;
     String dest = destAndPath.substring(0, commaIdx);
     String path = destAndPath.substring(commaIdx + 1);
 
+    // Split the comma-separated path into individual fields,
+    // e.g. "WIDE1-1,WIDE2-2" → fields[0]="WIDE1-1", fields[1]="WIDE2-2".
     String fields[8]; int nFields = 0;
     { String rem = path;
       while (rem.length() > 0 && nFields < 8) {
@@ -486,20 +498,32 @@ bool needsDigipeat(const String& raw, String& modified) {
       }
     }
 
+    // Scan fields left-to-right for the first hop we should handle.
+    // A trailing '*' means that hop has already been consumed — skip it.
     bool digipeated = false;
     for (int i = 0; i < nFields && !digipeated; i++) {
         if (fields[i].endsWith("*")) continue;
+
         if (fields[i].equalsIgnoreCase(DIGI_PATH_1)) {
+            // Exact alias match (e.g. WIDE1-1): replace with our
+            // callsign marked used (*). No hop count to decrement.
             fields[i] = String(myCallsignFull) + "*";
             digipeated = true;
+
         } else if (strlen(DIGI_PATH_2) > 0 &&
                    (fields[i].startsWith("WIDE2-") ||
                     fields[i].startsWith("wide2-"))) {
             int n = fields[i].substring(6).toInt();
             if (n >= 1) {
                 if (n == 1) {
+                    // Last remaining hop: replace field with our callsign.
+                    // e.g. WIDE2-1 → N0CALL-9*
                     fields[i] = String(myCallsignFull) + "*";
                 } else {
+                    // More hops remain: insert our callsign before the
+                    // decremented WIDE2 field so downstream digipeaters
+                    // can still forward it.
+                    // e.g. WIDE2-2 → N0CALL-9*, WIDE2-1
                     if (nFields < 8) {
                         for (int j = nFields; j > i; j--) fields[j] = fields[j-1];
                         fields[i]   = String(myCallsignFull) + "*";
@@ -513,6 +537,7 @@ bool needsDigipeat(const String& raw, String& modified) {
     }
     if (!digipeated) return false;
 
+    // Reassemble the modified path and rebuild the full TNC2 packet.
     String newPath;
     for (int i = 0; i < nFields; i++) {
         if (i > 0) newPath += ',';
