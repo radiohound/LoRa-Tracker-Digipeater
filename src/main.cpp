@@ -1,4 +1,3 @@
-Content is user-generated and unverified.
 // ============================================================
 // STM32WLE5 LoRa APRS Tracker + Digipeater + Horus Binary v2
 // Target: Ebyte E77-400MBL-01 / E77-900MBL-01 (STM32WLE5CC)
