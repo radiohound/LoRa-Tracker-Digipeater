@@ -24,11 +24,12 @@
 #include <SparkFun_u-blox_GNSS_Arduino_Library.h>
 #include <STM32LowPower.h>
 #include <STM32RTC.h>
+
+#include "config.h"
+
 #if BMP280_ENABLED
 #include <Adafruit_BMP280.h>
 #endif
-
-#include "config.h"
 
 // ============================================================
 //  DEBUG
