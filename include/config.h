@@ -13,7 +13,7 @@
 //   TRACKER_ONLY  – beacon GPS, deep sleep between beacons
 //   TRACKER_DIGI  – beacon GPS + digipeat while awake
 //   DIGI_ONLY     – continuous RX digipeater (~5-6 mA)
-//   DIGI_CAD      – CAD-based digipeater (~0.1 mA, misses first
+//   DIGI_CAD      – Channel Activity Detection (CAD)-based digipeater (~0.1 mA, misses first
 //                   packet of each burst but catches all others)
 // ------------------------------------------------------------
 #define MODE_TRACKER_ONLY  0
