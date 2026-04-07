@@ -23,20 +23,20 @@
 #define MODE_DIGI_ONLY      3   // RX/digipeat continuously, no GPS/beacon
 #define MODE_DIGI_CAD       4   // Low-power CAD digipeater
 
-#define OPERATING_MODE      MODE_TRACKER_ONLY
+#define OPERATING_MODE      MODE_TRACKER_DIGI
 
 // ============================================================
 // IDENTITY
 // ============================================================
-#define MY_CALLSIGN         "N0CALL"
-#define MY_SSID             11              // 11 = balloon
-#define MY_COMMENT          " Horus/APRS Tracker"
+#define MY_CALLSIGN         "K6ATV"
+#define MY_SSID             7
+#define MY_COMMENT          " STM32WLE5 LoRa APRS"
 
 // ============================================================
 // APRS
 // ============================================================
-#define APRS_DESTINATION    "APRS"
-#define BEACON_PATH         "WIDE1-1,WIDE2-1"
+#define APRS_DESTINATION    "APZP01"
+#define BEACON_PATH         "WIDE1-1"
 #define APRS_SYMBOL_TABLE   '/'
 #define APRS_SYMBOL_CODE    'O'             // 'O' = balloon
 
@@ -58,12 +58,12 @@
 // Older crystal modules: remove setTCXO() in radioInit() and
 // use firmware labelled "-xtal".
 // ============================================================
-#define TCXO_VOLTAGE        1.8             // volts
+#define TCXO_VOLTAGE        1.7f            // volts
 
 // ============================================================
 // BEACON
 // ============================================================
-#define BEACON_INTERVAL_S   60              // seconds between beacons
+#define BEACON_INTERVAL_S   120             // seconds between beacons
 
 // ============================================================
 // GPS
@@ -127,10 +127,10 @@
 // DIGIPEATER
 // ============================================================
 #define DIGI_PATH_1         "WIDE1-1"
-#define DIGI_PATH_2         "WIDE2"
+#define DIGI_PATH_2         "WIDE2-1"
 #define DIGI_QUEUE_SIZE     4
-#define DIGI_DELAY_MIN_MS   2000
-#define DIGI_DELAY_MAX_MS   5000
+#define DIGI_DELAY_MIN_MS   80
+#define DIGI_DELAY_MAX_MS   450
 
 // ============================================================
 // CAD DIGIPEATER
@@ -144,12 +144,10 @@
 // Verified against PicoTrack / mLRS E77 MBL documentation.
 // Update to match your carrier board schematic if different.
 // ============================================================
-#define RFSWITCH_PINS \
-    { PC3, PC4, RADIOLIB_NC }
-
-#define RFSWITCH_TABLE \
-    { STM32WLx::MODE_IDLE,  { LOW,  LOW  } }, \
-    { STM32WLx::MODE_RX,    { HIGH, LOW  } }, \
-    { STM32WLx::MODE_TX_LP, { LOW,  HIGH } }, \
-    { STM32WLx::MODE_TX_HP, { LOW,  HIGH } }, \
+#define RFSWITCH_PINS   {PA6, PA7, PB3, RADIOLIB_NC, RADIOLIB_NC}
+#define RFSWITCH_TABLE  \
+    {STM32WLx::MODE_IDLE,  {LOW,  LOW,  LOW}},  \
+    {STM32WLx::MODE_RX,    {LOW,  HIGH, LOW}},  \
+    {STM32WLx::MODE_TX_LP, {HIGH, LOW,  HIGH}}, \
+    {STM32WLx::MODE_TX_HP, {HIGH, LOW,  HIGH}}, \
     END_OF_MODE_TABLE

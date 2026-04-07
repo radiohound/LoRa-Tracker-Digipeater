@@ -237,7 +237,7 @@ void radioInit() {
 }
 
 void radioSleep()    { radio.sleep(); radioReady = false; }
-void radioStartRx()  { radio.startReceive(); }
+void radioStartRx()  { radio.setPacketReceivedAction(onRadioRx); radio.startReceive(); }
 void radioStartCad() { radio.startChannelScan(); }
 
 bool radioTransmit(const String& tnc2) {
@@ -651,7 +651,7 @@ bool needsDigipeat(const String& raw, String& modified) {
     if (arrowIdx < 0) return false;
     String source      = header.substring(0, arrowIdx);
     String destAndPath = header.substring(arrowIdx + 1);
-    if (source.startsWith(MY_CALLSIGN)) return false;
+    if (source.equalsIgnoreCase(myCallsignFull)) return false;
 
     int commaIdx = destAndPath.indexOf(',');
     if (commaIdx < 0) return false;
@@ -840,16 +840,17 @@ void loop() {
     enterDeepSleep((uint32_t)BEACON_INTERVAL_S * 1000UL);
 
 #elif OPERATING_MODE == MODE_TRACKER_DIGI
-    radioInit();
-    gpsInit();
+    if (!gpsReady) gpsInit();
     sendBeacon();       // APRS then Horus (if enabled), ends in LoRa mode
     gpsPowerOff();
-    radioStartRx();     // radio already in LoRa mode after sendBeacon()
+    radioInit();
+    radioRxFlag = false;
+    radioStartRx();
     uint32_t end = millis() + (uint32_t)BEACON_INTERVAL_S * 1000UL;
     while (millis() < end) {
         if (radioRxFlag) { radioRxFlag = false; processRxPacket(); }
         flushDigiQueue();
-        LowPower.idle(10);
+        delay(10);
     }
 
 #elif OPERATING_MODE == MODE_DIGI_ONLY
