@@ -42,7 +42,9 @@
 
 // ============================================================
 // LORA (APRS)
+// Set APRS_ENABLED to 0 to skip LoRa APRS transmission (e.g. Horus-only mode)
 // ============================================================
+#define APRS_ENABLED        1
 #define LORA_FREQ           433.775         // MHz — EU LoRa APRS
 #define LORA_BW             125.0           // kHz
 #define LORA_SF             12
@@ -63,7 +65,7 @@
 // ============================================================
 // BEACON
 // ============================================================
-#define BEACON_INTERVAL_S   120             // seconds between beacons
+#define BEACON_INTERVAL_S   120              // seconds between beacons
 
 // ============================================================
 // GPS
@@ -107,11 +109,12 @@
 //   https://github.com/projecthorus/horusbinary_radiolib
 // into this src/ folder.
 // ============================================================
-#define HORUS_ENABLED       1
-#define HORUS_PAYLOAD_ID    256             // replace with registered ID for flights
+#define HORUS_ENABLED       0
+#define HORUS_PAYLOAD_ID    930             // replace with registered ID for flights 256
 #define HORUS_FREQ          434.200         // MHz
 #define HORUS_FSK4_BAUD     100             // symbols/sec
 #define HORUS_FSK4_SPACING  270             // Hz between tones
+#define HORUS_TX_POWER      4              // dBm (-9 to 22)
 
 // ============================================================
 // CUTDOWN (OPTIONAL)
@@ -148,6 +151,5 @@
 #define RFSWITCH_TABLE  \
     {STM32WLx::MODE_IDLE,  {LOW,  LOW,  LOW}},  \
     {STM32WLx::MODE_RX,    {LOW,  HIGH, LOW}},  \
-    {STM32WLx::MODE_TX_LP, {HIGH, LOW,  HIGH}}, \
     {STM32WLx::MODE_TX_HP, {HIGH, LOW,  HIGH}}, \
     END_OF_MODE_TABLE
