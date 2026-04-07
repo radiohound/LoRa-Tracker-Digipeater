@@ -104,6 +104,7 @@ static float bmpSeaLevelHpa = 1013.25f;
 
 #if HORUS_ENABLED
 static uint16_t horusCounter = 0;
+static bool     fskReady     = false;
 
 // Horus Binary v2 packet — 16 bytes, last 4 user-customisable
 // https://github.com/projecthorus/horusdemodlib/wiki/5-Customising-a-Horus-Binary-v2-Packet
@@ -264,13 +265,14 @@ void onRadioCad() { radioCadFlag = true; }
 // ============================================================
 #if HORUS_ENABLED
 void radioInitFSK() {
+    fskReady = false;
     radio.setRfSwitchTable(rfswitch_pins, rfswitch_table);
 
     DBG(F("[Radio] Init FSK... "));
     int state = radio.beginFSK();
     if (state != RADIOLIB_ERR_NONE) {
         DBG(F("failed, code ")); DBGLN(state);
-        return;                 // non-fatal — APRS still works
+        return;
     }
 
     state = radio.setTCXO(TCXO_VOLTAGE);
@@ -286,11 +288,12 @@ void radioInitFSK() {
     }
 
     radio.setFrequency(HORUS_FREQ);
-    radio.setBitRate(HORUS_FSK4_BAUD * 2.0);           // 2 bits per symbol
+    radio.setBitRate(HORUS_FSK4_BAUD * 2.0);
     radio.setFrequencyDeviation(HORUS_FSK4_SPACING / 2.0);
 
-    DBGLN(F("OK"));
     fsk4_setup();
+    fskReady = true;
+    DBGLN(F("OK"));
 }
 #endif
 
@@ -346,7 +349,7 @@ bool waitForFix(uint32_t timeoutMs) {
             lastPos.lat    = myGPS.getLatitude()    / 1e7f;
             lastPos.lon    = myGPS.getLongitude()   / 1e7f;
             lastPos.altM   = myGPS.getAltitudeMSL() / 1000.0f;
-            lastPos.speed  = (int)(myGPS.getGroundSpeed() / 514.44f);  // mm/s → knots
+            lastPos.speed  = (int)(myGPS.getGroundSpeed() / 514.44f);  // mm/s → knots (APRS uses knots)
             lastPos.course = myGPS.getHeading() / 100000;
             lastPos.sats   = myGPS.getSIV();
             lastPos.hour   = myGPS.getHour();
@@ -505,7 +508,7 @@ void buildHorusPacket(uint8_t* buf, int* len) {
     pkt.Latitude   = lastPos.lat;
     pkt.Longitude  = lastPos.lon;
     pkt.Altitude   = (uint16_t)constrain((int)altM, 0, 65535);
-    pkt.Speed      = (uint8_t)constrain(lastPos.speed, 0, 255);
+    pkt.Speed      = (uint8_t)constrain((int)(lastPos.speed * 1.852f), 0, 255); // knots → km/h for Horus
     pkt.Sats       = lastPos.sats;
     pkt.BattVoltage = 0;    // optional: map ADC reading to 0-255
     pkt.UserData    = 0;    // optional: temperature, status flags, etc.
@@ -523,7 +526,8 @@ void transmitHorusV2() {
     int coded_len = horus_l2_encode_tx_packet(horusCodedBuf, horusRawBuf, raw_len);
 
     DBG(F("[TX Horus] pkt #")); DBG(horusCounter - 1);
-    DBG(F("  alt=")); DBG((int)horusRawBuf[11] | ((int)horusRawBuf[12] << 8));
+    DBG(F("  alt="));
+    DBG(((HorusBinaryV2*)horusRawBuf)->Altitude);
     DBGLN(F("m"));
 
     fsk4_idle();    // brief carrier for AGC settle
@@ -604,7 +608,11 @@ void sendBeacon() {
     // Switch to FSK mode, transmit, then return to LoRa so the
     // rest of the operating mode loop works without re-init.
     radioInitFSK();
-    transmitHorusV2();
+    if (fskReady) {
+        transmitHorusV2();
+    } else {
+        DBGLN(F("[Horus] FSK init failed — skipping Horus TX."));
+    }
     radioInit();    // back to LoRa for RX / sleep
 #endif
 }
