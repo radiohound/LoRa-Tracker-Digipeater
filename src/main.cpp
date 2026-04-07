@@ -53,7 +53,8 @@
 // ============================================================
 // RADIO
 // ============================================================
-STM32WLx radio = new STM32WLx_Module();
+STM32WLx    radio = new STM32WLx_Module();
+FSK4Client  fsk4(&radio);
 
 static const uint32_t              rfswitch_pins[]  = RFSWITCH_PINS;
 static const Module::RfSwitchMode_t rfswitch_table[] = { RFSWITCH_TABLE };
@@ -126,7 +127,6 @@ struct __attribute__((packed)) HorusBinaryV2 {
 
 static uint8_t horusRawBuf[128];
 static uint8_t horusCodedBuf[128];
-static uint32_t horusToneDelay_us = 0;
 #endif
 
 #if CUTDOWN_ENABLED
@@ -187,11 +187,6 @@ void    checkCutdown(float altM);
 
 #if HORUS_ENABLED
 void    radioInitFSK();
-void    fsk4_setup();
-void    fsk4_tone(int tone);
-void    fsk4_idle();
-void    fsk4_preamble();
-void    fsk4_write(uint8_t* data, int len);
 uint16_t crc16_ccitt(uint8_t* data, uint16_t len);
 void    buildHorusPacket(uint8_t* buf, int* len);
 void    transmitHorusV2();
@@ -280,18 +275,18 @@ void radioInitFSK() {
         DBG(F("TCXO failed, code ")); DBGLN(state); return;
     }
 
-    if (radio.setOutputPower(LORA_TX_POWER) == RADIOLIB_ERR_INVALID_OUTPUT_POWER) {
+    if (radio.setOutputPower(HORUS_TX_POWER) == RADIOLIB_ERR_INVALID_OUTPUT_POWER) {
         DBGLN(F("[Radio] Invalid power!")); return;
     }
     if (radio.setCurrentLimit(LORA_OCP_MA) == RADIOLIB_ERR_INVALID_CURRENT_LIMIT) {
         DBGLN(F("[Radio] Invalid OCP!")); return;
     }
 
-    radio.setFrequency(HORUS_FREQ);
-    radio.setBitRate(HORUS_FSK4_BAUD * 2.0);
-    radio.setFrequencyDeviation(HORUS_FSK4_SPACING / 2.0);
+    state = fsk4.begin(HORUS_FREQ, HORUS_FSK4_SPACING, HORUS_FSK4_BAUD);
+    if (state != RADIOLIB_ERR_NONE) {
+        DBG(F("FSK4 client failed, code ")); DBGLN(state); return;
+    }
 
-    fsk4_setup();
     fskReady = true;
     DBGLN(F("OK"));
 }
@@ -436,47 +431,10 @@ void checkCutdown(float altM) {
 
 // ============================================================
 // HORUS BINARY 4FSK
-//
-// The radio is put into continuous/direct mode via transmitDirect().
-// Each call sets the PLL to a new frequency, producing a carrier
-// at that frequency for exactly one symbol period.
-//
-// Tone mapping (LSB-first, 2 bits per symbol):
-//   0 → base freq + 0 * spacing
-//   1 → base freq + 1 * spacing
-//   2 → base freq + 2 * spacing
-//   3 → base freq + 3 * spacing
+// Uses RadioLib FSK4Client for tone generation — the same
+// approach used in the verified bench-test sketch.
 // ============================================================
 #if HORUS_ENABLED
-void fsk4_setup() {
-    horusToneDelay_us = (uint32_t)(1000000UL / HORUS_FSK4_BAUD);
-}
-
-void fsk4_tone(int tone) {
-    uint32_t freq_hz = (uint32_t)(HORUS_FREQ * 1000000.0)
-                     + (uint32_t)(tone * HORUS_FSK4_SPACING);
-    radio.transmitDirect(freq_hz);
-    delayMicroseconds(horusToneDelay_us);
-}
-
-void fsk4_idle() {
-    radio.transmitDirect((uint32_t)(HORUS_FREQ * 1000000.0));
-}
-
-void fsk4_preamble() {
-    for (int i = 0; i < 8; i++) {
-        fsk4_tone(0); fsk4_tone(1); fsk4_tone(2); fsk4_tone(3);
-    }
-}
-
-void fsk4_write(uint8_t* data, int len) {
-    for (int i = 0; i < len; i++) {
-        fsk4_tone((data[i] >> 0) & 0x03);
-        fsk4_tone((data[i] >> 2) & 0x03);
-        fsk4_tone((data[i] >> 4) & 0x03);
-        fsk4_tone((data[i] >> 6) & 0x03);
-    }
-}
 
 uint16_t crc16_ccitt(uint8_t* data, uint16_t len) {
     uint16_t crc = 0xFFFF;
@@ -530,11 +488,11 @@ void transmitHorusV2() {
     DBG(((HorusBinaryV2*)horusRawBuf)->Altitude);
     DBGLN(F("m"));
 
-    fsk4_idle();    // brief carrier for AGC settle
-    delay(100);
-    fsk4_preamble();
-    fsk4_write(horusCodedBuf, coded_len);
-    radio.standby();
+    fsk4.idle();
+    delay(1000);
+    // 8-byte preamble (0x1B = tones 3,2,1,0 repeating — matches test sketch)
+    for (int i = 0; i < 8; i++) fsk4.write((uint8_t)0x1B);
+    fsk4.write(horusCodedBuf, coded_len);
 
     DBGLN(F("[TX Horus] Done."));
 }
@@ -576,20 +534,21 @@ String buildAPRSPacket() {
 // and TRACKER_ONLY can call radioSleep() without a mode mismatch.
 // ============================================================
 void sendBeacon() {
-    if (!waitForFix(GPS_FIX_TIMEOUT_MS)) {
-        if (!lastPos.valid) {
-            DBGLN(F("[Beacon] No position — skipping TX."));
-            return;
-        }
+    bool haveFix = waitForFix(GPS_FIX_TIMEOUT_MS);
+    bool havePos = haveFix || lastPos.valid;
+
+    if (!havePos) {
+        DBGLN(F("[Beacon] No position — skipping APRS."));
+    } else if (!haveFix) {
         DBGLN(F("[Beacon] Using last known position."));
     }
 
 #if BMP280_ENABLED
-    if (bmpReady) calibrateBmpFromGPS(BMP280_CAL_SAMPLES);
+    if (bmpReady && havePos) calibrateBmpFromGPS(BMP280_CAL_SAMPLES);
 #endif
 
 #if CUTDOWN_ENABLED
-    {
+    if (havePos) {
 #if BMP280_ENABLED
         float altM = bmpReady ? bmp.readAltitude(bmpSeaLevelHpa) : lastPos.altM;
 #else
@@ -599,12 +558,17 @@ void sendBeacon() {
     }
 #endif
 
-    // --- APRS (LoRa) ---
-    // Radio is already in LoRa mode from radioInit() in the main loop.
-    radioTransmit(buildAPRSPacket());
+#if APRS_ENABLED
+    if (havePos) {
+        // --- APRS (LoRa) ---
+        // Radio is already in LoRa mode from radioInit() in the main loop.
+        radioTransmit(buildAPRSPacket());
+    }
+#endif
 
 #if HORUS_ENABLED
     // --- Horus Binary v2 (4FSK) ---
+    // Transmit regardless of GPS fix — packet will have zeroed coords if no fix.
     // Switch to FSK mode, transmit, then return to LoRa so the
     // rest of the operating mode loop works without re-init.
     radioInitFSK();
