@@ -121,7 +121,6 @@ struct __attribute__((packed)) HorusBinaryV2 {
     uint8_t  Speed;         // km/h
     uint8_t  Sats;
     uint8_t  BattVoltage;   // optional: 0-255 mapped from supply voltage
-    uint8_t  UserData;      // optional: temperature, flags, etc.
     uint16_t Checksum;      // CRC16-CCITT over all preceding bytes
 };
 
@@ -469,7 +468,6 @@ void buildHorusPacket(uint8_t* buf, int* len) {
     pkt.Speed      = (uint8_t)constrain((int)(lastPos.speed * 1.852f), 0, 255); // knots → km/h for Horus
     pkt.Sats       = lastPos.sats;
     pkt.BattVoltage = 0;    // optional: map ADC reading to 0-255
-    pkt.UserData    = 0;    // optional: temperature, status flags, etc.
     pkt.Checksum   = crc16_ccitt((uint8_t*)&pkt, sizeof(pkt) - 2);
 
     memcpy(buf, &pkt, sizeof(pkt));
@@ -484,15 +482,26 @@ void transmitHorusV2() {
     int coded_len = horus_l2_encode_tx_packet(horusCodedBuf, horusRawBuf, raw_len);
 
     DBG(F("[TX Horus] pkt #")); DBG(horusCounter - 1);
+    DBG(F("  raw=")); DBG(raw_len); DBG(F("B"));
+    DBG(F("  coded=")); DBG(coded_len); DBG(F("B"));
     DBG(F("  alt="));
     DBG(((HorusBinaryV2*)horusRawBuf)->Altitude);
     DBGLN(F("m"));
 
+    // Hardcoded test packet from bench-test sketch — known to decode correctly
+    static const uint8_t testPacket[] = {
+        0x45, 0x24, 0x24, 0x48, 0x2F, 0x12, 0x16, 0x08, 0x15, 0xC1,
+        0x49, 0xB2, 0x06, 0xFC, 0x92, 0xEB, 0x93, 0xD7, 0xEE, 0x5D,
+        0x35, 0xA0, 0x91, 0xDA, 0x8D, 0x5F, 0x85, 0x6B, 0x63, 0x03,
+        0x6B, 0x60, 0xEA, 0xFE, 0x55, 0x9D, 0xF1, 0xAB, 0xE5, 0x5E,
+        0xDB, 0x7C, 0xDB, 0x21, 0x5A
+    };
+
     fsk4.idle();
-    delay(1000);
+    delay(5000);
     // 8-byte preamble (0x1B = tones 3,2,1,0 repeating — matches test sketch)
-    for (int i = 0; i < 8; i++) fsk4.write((uint8_t)0x1B);
-    fsk4.write(horusCodedBuf, coded_len);
+    for (int i = 0; i < 16; i++) fsk4.write((uint8_t)0x1B);
+    fsk4.write(testPacket, sizeof(testPacket));
 
     DBGLN(F("[TX Horus] Done."));
 }

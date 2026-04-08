@@ -30,7 +30,7 @@
 // ============================================================
 #define MY_CALLSIGN         "K6ATV"
 #define MY_SSID             7
-#define MY_COMMENT          " STM32WLE5 LoRa APRS"
+#define MY_COMMENT          " STM32WLE5 LoRa"
 
 // ============================================================
 // APRS
@@ -44,7 +44,7 @@
 // LORA (APRS)
 // Set APRS_ENABLED to 0 to skip LoRa APRS transmission (e.g. Horus-only mode)
 // ============================================================
-#define APRS_ENABLED        1
+#define APRS_ENABLED        0
 #define LORA_FREQ           433.775         // MHz — EU LoRa APRS
 #define LORA_BW             125.0           // kHz
 #define LORA_SF             12
@@ -65,7 +65,7 @@
 // ============================================================
 // BEACON
 // ============================================================
-#define BEACON_INTERVAL_S   120              // seconds between beacons
+#define BEACON_INTERVAL_S   5              // seconds between beacons
 
 // ============================================================
 // GPS
@@ -109,12 +109,12 @@
 //   https://github.com/projecthorus/horusbinary_radiolib
 // into this src/ folder.
 // ============================================================
-#define HORUS_ENABLED       0
-#define HORUS_PAYLOAD_ID    930             // replace with registered ID for flights 256
-#define HORUS_FREQ          434.200         // MHz
+#define HORUS_ENABLED       1
+#define HORUS_PAYLOAD_ID    256             // replace with registered ID for flights 256 - 930
+#define HORUS_FREQ          431.051         // MHz
 #define HORUS_FSK4_BAUD     100             // symbols/sec
 #define HORUS_FSK4_SPACING  270             // Hz between tones
-#define HORUS_TX_POWER      4              // dBm (-9 to 22)
+#define HORUS_TX_POWER      10              // dBm (-9 to 22)
 
 // ============================================================
 // CUTDOWN (OPTIONAL)
