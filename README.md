@@ -31,13 +31,68 @@ src/main.cpp          — firmware
 
 ## Quick start
 
-1. Install [PlatformIO](https://platformio.org/).
-2. Open `include/config.h` and set:
-   - `OPERATING_MODE` — choose your mode (see table below)
-   - `MY_CALLSIGN`, `MY_SSID`, `MY_COMMENT`
-   - `LORA_FREQ` for your region
-   - The correct `RFSWITCH_PINS` / `RFSWITCH_TABLE` block for your board
-3. `pio run --target upload`
+### 1. Install VS Code and PlatformIO
+
+1. Download and install [Visual Studio Code](https://code.visualstudio.com/).
+2. Open VS Code, go to the **Extensions** panel (Ctrl+Shift+X / Cmd+Shift+X),
+   and search for **PlatformIO IDE**. Install it and restart VS Code when prompted.
+3. PlatformIO will automatically install the STM32 platform and all required
+   libraries the first time you build — no manual library installation needed.
+
+### 2. Get the code
+
+**Option A — Clone with Git:**
+```bash
+git clone https://github.com/radiohound/LoRa-Tracker-Digipeater.git
+```
+Then in VS Code: **File → Open Folder** and select the cloned folder.
+
+**Option B — Download ZIP:**
+1. Click the green **Code** button on GitHub, then **Download ZIP**.
+2. Extract the ZIP to a folder of your choice.
+3. In VS Code: **File → Open Folder** and select the extracted folder.
+
+PlatformIO recognises the project automatically when it sees `platformio.ini`
+in the root.
+
+### 3. Configure
+
+Open `include/config.h` and set:
+- `OPERATING_MODE` — choose your mode (see table below)
+- `MY_CALLSIGN`, `MY_SSID`, `MY_COMMENT`
+- `LORA_FREQ` for your region (433.775 MHz EU, 144.390 MHz US — check local LoRa APRS frequency)
+- Verify `RFSWITCH_PINS` / `RFSWITCH_TABLE` matches your board (see RF switch table below)
+
+### 4. Connect the hardware
+
+Connect the E77 dev board to your computer via the ST-Link USB port (the
+built-in programmer on the dev board). On first connection, Windows may
+install ST-Link drivers automatically; if not, install the
+[ST-Link drivers](https://www.st.com/en/development-tools/stsw-link009.html)
+manually.
+
+### 5. Compile and upload
+
+**Using the VS Code UI:**
+- Click the **PlatformIO** icon in the left sidebar (the alien head).
+- Under **PROJECT TASKS → ebyte_e77_dev**, click **Upload** to compile and
+  flash in one step. Click **Build** to compile only.
+
+**Using the terminal:**
+```bash
+pio run                        # compile only
+pio run --target upload        # compile and flash
+```
+
+### 6. Monitor serial output
+
+- In VS Code PlatformIO sidebar: **Monitor** under PROJECT TASKS.
+- Or in the terminal:
+```bash
+pio device monitor --baud 115200
+```
+You should see `[Radio] Init LoRa... OK` followed by GPS and TX log lines
+within a few seconds of powering on.
 
 ---
 
@@ -64,7 +119,7 @@ In a typical APRS environment this is fully acceptable digipeater behaviour.
 | Stop2 — MCU only, radio off | ~2 µA |
 | MCU idle / light sleep | ~1.5 mA |
 | LoRa RX (continuous) | ~5 mA |
-| CAD scan (~65 ms at SF12) | ~1.5 mA |
+| Channel Activity Detection (CAD) scan (~65 ms at SF12) | ~1.5 mA |
 | GPS acquiring fix | ~20–30 mA |
 | LoRa TX at 22 dBm (peak) | ~100 mA |
 
@@ -182,7 +237,7 @@ Pinout varies by module — uncomment the right block in `config.h`.
 
 - **DIGI_ONLY:** Listens continuously. Digipeats any packet with an
   unactivated `WIDE1-1` or `WIDE2-N` path.
-- **DIGI_CAD:** Runs CAD scans every 2 seconds. On preamble detection,
+- **DIGI_CAD:** Runs Channel Activity Detection (CAD) scans every 2 seconds. On preamble detection,
   switches to full RX and waits for the next complete packet.
 - Both modes apply a random 80–450 ms delay before retransmitting to
   reduce collision probability with other digipeaters.
@@ -229,8 +284,8 @@ Enable and configure in `config.h`:
 ```c
 #define CUTDOWN_ENABLED        1
 #define CUTDOWN_PIN            PA0
-#define CUTDOWN_ALTITUDE_M     30000   // metres MSL
-#define CUTDOWN_ARM_ASCENT_M   500     // metres above launch before armed
+#define CUTDOWN_ALTITUDE_M     30000   // meters MSL
+#define CUTDOWN_ARM_ASCENT_M   500     // meters above launch before armed
 #define CUTDOWN_CONFIRM_COUNT  5       // consecutive readings required
 #define CUTDOWN_PULSE_MS       5000    // pin HIGH duration in milliseconds
 ```
