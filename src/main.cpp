@@ -606,8 +606,8 @@ void setup() {
 void loop() {
 
 #if OPERATING_MODE == MODE_TRACKER_ONLY
-    radioInit();
-    gpsInit();
+    if (!radioReady) radioInit();
+    if (!gpsReady)   gpsInit();
     sendBeacon();
     gpsPowerOff();
     radioSleep();

@@ -23,13 +23,13 @@
 #define MODE_DIGI_ONLY      3   // RX/digipeat continuously, no GPS/beacon
 #define MODE_DIGI_CAD       4   // Low-power CAD digipeater
 
-#define OPERATING_MODE      MODE_TRACKER_ONLY
+#define OPERATING_MODE      MODE_TRACKER_DIGI
 
 // ============================================================
 // IDENTITY
 // ============================================================
-#define MY_CALLSIGN         "K6ATV"
-#define MY_SSID             8
+#define MY_CALLSIGN         "W2HAB"
+#define MY_SSID             11
 #define MY_COMMENT          " STM32WLE5 LoRa"
 
 // ============================================================
@@ -124,5 +124,6 @@
 #define RFSWITCH_TABLE  \
     {STM32WLx::MODE_IDLE,  {LOW,  LOW,  LOW}},  \
     {STM32WLx::MODE_RX,    {LOW,  HIGH, LOW}},  \
+    {STM32WLx::MODE_TX_LP, {HIGH, LOW,  HIGH}}, \
     {STM32WLx::MODE_TX_HP, {HIGH, LOW,  HIGH}}, \
     END_OF_MODE_TABLE

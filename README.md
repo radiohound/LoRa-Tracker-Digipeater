@@ -265,6 +265,39 @@ Change `BEACON_INTERVAL_S` in `config.h`. Recommended minimums:
 
 ---
 
+## Horus Binary 4FSK — not supported on this hardware
+
+Horus Binary v1/v2 4FSK (100 baud, 270 Hz tone spacing) was investigated for
+this platform and is **not feasible** on the STM32WLE5 with a TCXO-equipped
+E77 module.
+
+The STM32WLE5 SubGhz IP generates 4FSK by switching between four CW
+frequencies using `SET_TX_CONTINUOUS_WAVE`. Each call to that command forces a
+full TCXO startup sequence (~5 ms) enforced in hardware, regardless of prior
+radio state. At 100 baud (10 ms/symbol), this creates ~50% dead time per
+symbol — effectively transmitting OOK at 100 Hz rather than 4FSK. The
+resulting OOK sidebands fall directly on adjacent tones (270 Hz spacing) and
+prevent the modem from distinguishing symbols.
+
+Approaches tried and confirmed not to work:
+- Setting fallback mode to STDBY_XOSC or FS before transmission
+- Calling `SetRfFrequency` while staying in TX CW mode
+- Writing the PLL frequency register directly via `writeRegister`
+- Reducing `tcxoDelay` to 0 or 1 ms
+- Single vs multiple `fsk4.write()` calls
+
+The root cause is a hardware limitation: the STM32WLE5 SubGhz IP always
+enforces the TCXO startup delay on every `SET_TX_CONTINUOUS_WAVE` command.
+This cannot be worked around in software.
+
+**Possible hardware solutions** (not implemented):
+- Always-on TCXO: solder the TCXO VCC line directly to 3.3V, bypassing DIO3
+  control. Tone transitions would then only require PLL relock (~52 µs).
+- Separate radio: add a Si4032 or Si4463 with native 4FSK hardware modulation
+  on SPI alongside the E77. This is how RS41 sondes work.
+
+---
+
 ## Known caveats
 
 - **APRSPacketLib field names** — the library evolves quickly. If `APRSPacket`
