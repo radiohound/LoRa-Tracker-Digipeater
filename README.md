@@ -48,10 +48,10 @@ src/main.cpp          — firmware
 | `TRACKER_ONLY` | Yes | TX then Stop2 sleep | ~2–8 mA (GPS-dominated) |
 | `TRACKER_DIGI` | Yes | TX then continuous RX | ~5–6 mA |
 | `DIGI_ONLY` | No | Continuous RX always | ~6 mA |
-| `DIGI_CAD` | No | CAD scan + deep sleep | **~0.04–0.1 mA** |
+| `DIGI_CAD` | No | Channel Activity Detection (CAD) scan + deep sleep | **~0.04–0.1 mA** |
 
 `DIGI_CAD` is the recommended mode for battery or solar operation. It uses
-Channel Activity Detection to wake only when a LoRa preamble is present on
+Channel Activity Detection (CAD) to wake only when a LoRa preamble is present on
 the channel, missing the triggering packet but catching all subsequent ones.
 In a typical APRS environment this is fully acceptable digipeater behaviour.
 
