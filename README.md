@@ -3,7 +3,9 @@
 Built around the **Ebyte E77-400MBL-01** (STM32WLE5CC, 433 MHz) with support
 for the ST Nucleo-WL55JC and other STM32WLE5-based modules.
 
-Libraries: **RadioLib** (jgromes) + **APRSPacketLib** (richonguzman).
+Libraries: **[RadioLib](https://github.com/jgromes/RadioLib)** (jgromes) + **[APRSPacketLib](https://github.com/richonguzman/APRSPacketLib)** (richonguzman).
+
+Licensed under the [MIT License](LICENSE) — free to use, modify, and distribute with attribution.
 
 Verified against the working [PicoTrack](https://github.com/radiohound/PicoTrack)
 firmware by K6ATV for RF switch pinout, TCXO voltage, and radio init sequence.
