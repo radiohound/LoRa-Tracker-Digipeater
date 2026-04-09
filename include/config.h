@@ -41,13 +41,13 @@
 #define APRS_SYMBOL_CODE    'O'             // 'O' = balloon
 
 // ============================================================
-// LORA (APRS)
+// LORA (APRS) 433.775, BW 125 kHz, SF 12, CR 4/5, sync word 0x12 are standard for LoRa APRS in North America & Europe.
 // ============================================================
 #define APRS_ENABLED        1
 #define LORA_FREQ           433.775         // MHz — EU LoRa APRS
 #define LORA_BW             125.0           // kHz
-#define LORA_SF             12
-#define LORA_CR             5
+#define LORA_SF             12              // spreading factor (6-12, higher = longer range but slower)  
+#define LORA_CR             5               // coding rate (5-8, higher = more robust but slower)
 #define LORA_TX_POWER       22              // dBm
 #define LORA_OCP_MA         140             // over-current protection (mA)
 #define LORA_SYNC_WORD      0x12            // LoRa APRS sync word
