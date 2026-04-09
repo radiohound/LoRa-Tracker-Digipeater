@@ -1,7 +1,7 @@
 #pragma once
 
 // ============================================================
-// STM32WLE5 LoRa APRS Tracker + Digipeater + Horus Binary
+// STM32WLE5 LoRa APRS Tracker + Digipeater
 // Target: Ebyte E77-400MBL-01 / E77-900MBL-01 (STM32WLE5CC)
 //
 // RF switch / GPS wiring verified against PicoTrack (K6ATV):
@@ -23,13 +23,13 @@
 #define MODE_DIGI_ONLY      3   // RX/digipeat continuously, no GPS/beacon
 #define MODE_DIGI_CAD       4   // Low-power CAD digipeater
 
-#define OPERATING_MODE      MODE_TRACKER_DIGI
+#define OPERATING_MODE      MODE_TRACKER_ONLY
 
 // ============================================================
 // IDENTITY
 // ============================================================
 #define MY_CALLSIGN         "K6ATV"
-#define MY_SSID             7
+#define MY_SSID             8
 #define MY_COMMENT          " STM32WLE5 LoRa"
 
 // ============================================================
@@ -42,9 +42,8 @@
 
 // ============================================================
 // LORA (APRS)
-// Set APRS_ENABLED to 0 to skip LoRa APRS transmission (e.g. Horus-only mode)
 // ============================================================
-#define APRS_ENABLED        0
+#define APRS_ENABLED        1
 #define LORA_FREQ           433.775         // MHz — EU LoRa APRS
 #define LORA_BW             125.0           // kHz
 #define LORA_SF             12
@@ -89,32 +88,6 @@
 #define BMP280_ENABLED      1
 #define BMP280_I2C_ADDR     0x76
 #define BMP280_CAL_SAMPLES  5               // GPS samples averaged for pressure cal
-
-// ============================================================
-// HORUS BINARY v2 (OPTIONAL)
-// Set to 1 to transmit a Horus Binary v2 4FSK packet after
-// each APRS beacon. Compatible with TRACKER_ONLY and
-// TRACKER_DIGI operating modes. Has no effect in DIGI_ONLY
-// or DIGI_CAD as those modes never call sendBeacon().
-//
-// The radio is re-initialised to FSK mode, Horus is
-// transmitted, then re-initialised back to LoRa — ready
-// for RX/sleep as the operating mode requires.
-//
-// Register a payload ID at:
-//   https://github.com/projecthorus/horusdemodlib/blob/master/payload_id_list.txt
-// Use 256 (4FSKTEST-V2) for bench testing only.
-//
-// Required: copy horus_l2.h and horus_l2.cpp from
-//   https://github.com/projecthorus/horusbinary_radiolib
-// into this src/ folder.
-// ============================================================
-#define HORUS_ENABLED       1
-#define HORUS_PAYLOAD_ID    256             // replace with registered ID for flights 256 - 930
-#define HORUS_FREQ          431.051         // MHz
-#define HORUS_FSK4_BAUD     100             // symbols/sec
-#define HORUS_FSK4_SPACING  270             // Hz between tones
-#define HORUS_TX_POWER      10              // dBm (-9 to 22)
 
 // ============================================================
 // CUTDOWN (OPTIONAL)
