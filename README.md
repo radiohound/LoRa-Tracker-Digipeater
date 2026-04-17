@@ -62,7 +62,7 @@ in the root.
 Open `include/config.h` and set:
 - `OPERATING_MODE` — choose your mode (see table below)
 - `MY_CALLSIGN`, `MY_SSID`, `MY_COMMENT`
-- `LORA_FREQ` for your region (433.775 MHz EU, 144.390 MHz US — check local LoRa APRS frequency)
+- `LORA_FREQ` for your region (433.775 MHz is used almost world wide — check local LoRa APRS frequency)
 - Verify `RFSWITCH_PINS` / `RFSWITCH_TABLE` matches your board (see RF switch table below)
 
 ### 4. Connect the hardware
