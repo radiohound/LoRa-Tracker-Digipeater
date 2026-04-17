@@ -16,16 +16,21 @@
 #define DEBUG_BAUD          115200
 
 // ============================================================
-// OPERATING MODE — pick exactly one
+// OPERATING MODE
+//   1 = TRACKER_ONLY      TX beacon, sleep, repeat
+//   2 = TRACKER_DIGI      TX beacon, then RX/digipeat until next interval
+//   3 = DIGI_ONLY         RX/digipeat continuously, no GPS/beacon
+//   4 = DIGI_CAD_SOLAR    Two-stage CAD, digipeats all stations
+//   5 = DIGI_CAD_BATTERY  Two-stage CAD, moving stations only
 // ============================================================
-#define MODE_TRACKER_ONLY      1   // TX beacon, sleep, repeat
-#define MODE_TRACKER_DIGI      2   // TX beacon, then RX/digipeat until next interval
-#define MODE_DIGI_ONLY         3   // RX/digipeat continuously, no GPS/beacon
-#define MODE_DIGI_CAD_SOLAR    4   // Two-stage CAD: sentinel + full RX window, digipeats all stations
-#define MODE_DIGI_CAD_BATTERY  5   // Two-stage CAD: only digipeats and opens RX window for stations that have moved
+#define MODE_TRACKER_ONLY      1
+#define MODE_TRACKER_DIGI      2
+#define MODE_DIGI_ONLY         3
+#define MODE_DIGI_CAD_SOLAR    4
+#define MODE_DIGI_CAD_BATTERY  5
 #define MODE_DIGI_CAD          MODE_DIGI_CAD_SOLAR  // backwards-compatible alias
 
-#define OPERATING_MODE      MODE_TRACKER_DIGI
+#define OPERATING_MODE  2
 
 // ============================================================
 // IDENTITY
