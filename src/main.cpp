@@ -110,6 +110,17 @@ struct DigiQueueEntry { String packet; uint32_t txAfterMs; bool used; };
 static DigiQueueEntry digiQueue[DIGI_QUEUE_SIZE];
 
 // ============================================================
+// STATION TRACKING (MODE_DIGI_CAD_BATTERY)
+// ============================================================
+struct StationRecord {
+    char  callsign[12];
+    float lat;
+    float lon;
+    bool  valid;
+};
+static StationRecord stationTable[STATION_TRACK_COUNT];
+
+// ============================================================
 // FORWARD DECLARATIONS
 // ============================================================
 void    radioInit();
@@ -126,7 +137,9 @@ bool    waitForFix(uint32_t timeoutMs);
 void    sendBeacon();
 String  buildAPRSPacket();
 void    processRxPacket();
+bool    processRxPacketBattery();
 void    runDiGiCAD();
+void    runDiGiCAD_Battery();
 bool    needsDigipeat(const String& raw, String& modified);
 bool    isDuplicate(const String& raw);
 void    markDuplicate(const String& raw);
@@ -134,6 +147,10 @@ void    enqueueForDigipeat(const String& pkt);
 void    flushDigiQueue();
 uint32_t crc32(const String& s);
 void    enterDeepSleep(uint32_t ms);
+float   distanceMeters(float lat1, float lon1, float lat2, float lon2);
+int     findStation(const String& call);
+void    updateStation(const String& call, float lat, float lon);
+int     classifyAndUpdate(const String& call, float lat, float lon);
 
 #if BMP280_ENABLED
 void    bmpInit();
@@ -524,35 +541,234 @@ void flushDigiQueue() {
 }
 
 // ============================================================
-// CAD DIGIPEATER — unchanged from radiohound
+// STATION TRACKING HELPERS
+// ============================================================
+float distanceMeters(float lat1, float lon1, float lat2, float lon2) {
+    float dlat = (lat2 - lat1) * 111320.0f;
+    float dlon = (lon2 - lon1) * 111320.0f * cosf(lat1 * 0.01745329f);
+    return sqrtf(dlat * dlat + dlon * dlon);
+}
+
+int findStation(const String& call) {
+    for (int i = 0; i < STATION_TRACK_COUNT; i++)
+        if (stationTable[i].valid && String(stationTable[i].callsign) == call)
+            return i;
+    return -1;
+}
+
+void updateStation(const String& call, float lat, float lon) {
+    int idx = findStation(call);
+    if (idx < 0) {
+        // Find an empty slot
+        for (int i = 0; i < STATION_TRACK_COUNT; i++) {
+            if (!stationTable[i].valid) { idx = i; break; }
+        }
+        // Table full — overwrite oldest entry (slot 0, simple rotation)
+        if (idx < 0) {
+            idx = 0;
+            for (int i = 1; i < STATION_TRACK_COUNT; i++) stationTable[i-1] = stationTable[i];
+            idx = STATION_TRACK_COUNT - 1;
+        }
+    }
+    call.toCharArray(stationTable[idx].callsign, sizeof(stationTable[idx].callsign));
+    stationTable[idx].lat   = lat;
+    stationTable[idx].lon   = lon;
+    stationTable[idx].valid = true;
+}
+
+// Classify a received station and update its stored position.
+// Returns STATION_NEW, STATION_MOVED, or STATION_STATIONARY.
+int classifyAndUpdate(const String& call, float lat, float lon) {
+    int idx = findStation(call);
+    int result;
+    if (idx < 0) {
+        result = STATION_NEW;
+    } else {
+        float dist = distanceMeters(stationTable[idx].lat, stationTable[idx].lon, lat, lon);
+        result = (dist >= STATION_MOVE_THRESH_M) ? STATION_MOVED : STATION_STATIONARY;
+    }
+    updateStation(call, lat, lon);
+    return result;
+}
+
+// ============================================================
+// BATTERY-MODE RX PACKET HANDLER
+// Parses the received packet, applies movement filter, and
+// digipeats only if the station is new or has moved.
+// Returns true if the packet warrants keeping the RX window open.
+// Does NOT call radioStartRx() — caller is responsible.
+// ============================================================
+bool processRxPacketBattery() {
+    String raw;
+    int state = radio.readData(raw);
+    if (state != RADIOLIB_ERR_NONE) {
+        DBG(F("[RX-BAT] readData failed, code ")); DBGLN(state);
+        return false;
+    }
+    if (raw.length() > 3 && raw[0] == '<') raw = raw.substring(3);
+    DBG(F("[RX-BAT] ")); DBGLN(raw);
+
+    APRSPacket aprs = APRSPacketLib::processReceivedPacket(raw, (int)radio.getRSSI(),
+                                                           radio.getSNR(), 0);
+    bool hasPosition = !(aprs.latitude == 0.0f && aprs.longitude == 0.0f);
+
+    bool shouldDigipeat = false;
+    bool openWindow     = false;
+
+    if (!hasPosition) {
+        // Non-position packet (message, status, object) — treat as interesting
+        DBG(F("[RX-BAT] No position — digipeating: ")); DBGLN(aprs.sender);
+        shouldDigipeat = true;
+        openWindow     = true;
+    } else {
+        int status = classifyAndUpdate(aprs.sender, aprs.latitude, aprs.longitude);
+        if (status == STATION_STATIONARY) {
+            DBG(F("[RX-BAT] Stationary — skipping: ")); DBGLN(aprs.sender);
+        } else {
+            const __FlashStringHelper* reason = (status == STATION_NEW) ? F("New") : F("Moved");
+            DBG(F("[RX-BAT] ")); DBG(reason);
+            DBG(F(" station — digipeating: ")); DBGLN(aprs.sender);
+            shouldDigipeat = true;
+            openWindow     = true;
+        }
+    }
+
+    if (shouldDigipeat) {
+        String modified;
+        if (needsDigipeat(raw, modified) && !isDuplicate(raw)) {
+            markDuplicate(raw);
+            enqueueForDigipeat(modified);
+            uint32_t flushDeadline = millis() + DIGI_DELAY_MAX_MS + 100UL;
+            while (millis() < flushDeadline) { flushDigiQueue(); delay(10); }
+        }
+    }
+    return openWindow;
+}
+
+// ============================================================
+// CAD DIGIPEATER — two-stage design
+//
+// Stage 1: continuous low-power CAD sentinel.
+//   Scans every CAD_SCAN_INTERVAL_MS. Guaranteed to detect any
+//   transmission >= CAD_SCAN_INTERVAL_MS long. Average current ~100 uA.
+//
+// Stage 2: active RX window entered on CAD trigger.
+//   Listens continuously for up to CAD_RX_WINDOW_SOLAR_MS (6 min).
+//   Timer resets on each received packet so an active station
+//   keeps the window open. Returns to Stage 1 after silence.
 // ============================================================
 void runDiGiCAD() {
-    radioInit();
-    for (int scan = 0; scan < CAD_BATCH_SIZE; scan++) {
-        radioCadFlag = false;
-        radioStartCad();
-        uint32_t cadStart = millis();
-        while (!radioCadFlag && millis() - cadStart < 500) LowPower.idle(5);
-        if (!radioCadFlag) continue;
+    if (!radioReady) radioInit();
 
-        int result = radio.getChannelScanResult();
-        if (result == RADIOLIB_LORA_DETECTED) {
-            DBGLN(F("[CAD] Preamble! Waiting for packet..."));
-            radioRxFlag = false;
-            radioStartRx();
-            uint32_t rxStart = millis();
-            while (!radioRxFlag && millis() - rxStart < 60000UL) LowPower.idle(10);
-            if (radioRxFlag) { radioRxFlag = false; processRxPacket(); }
-            else             { DBGLN(F("[CAD] RX timeout.")); }
-            radioSleep();
-            return;
-        }
+    // --- Stage 1: CAD sentinel ---
+    radioCadFlag = false;
+    radioStartCad();
+    uint32_t cadStart = millis();
+    while (!radioCadFlag && millis() - cadStart < 500) LowPower.idle(5);
+
+    if (!radioCadFlag) {
+        // No activity — sleep until next scan
         LowPower.deepSleep(CAD_SCAN_INTERVAL_MS);
+        return;
     }
-    DBG(F("[CAD] Batch done. Deep sleep "));
-    DBG(CAD_BATCH_SLEEP_MS / 1000); DBGLN(F("s"));
-    radioSleep();
-    enterDeepSleep(CAD_BATCH_SLEEP_MS);
+
+    int result = radio.getChannelScanResult();
+    if (result != RADIOLIB_LORA_DETECTED) {
+        LowPower.deepSleep(CAD_SCAN_INTERVAL_MS);
+        return;
+    }
+
+    // --- Stage 2: active RX window ---
+    DBGLN(F("[CAD] Signal detected — entering active RX window"));
+    uint32_t windowDeadline = millis() + CAD_RX_WINDOW_SOLAR_MS;
+
+    radioRxFlag = false;
+    radioStartRx();
+
+    while (millis() < windowDeadline) {
+        if (radioRxFlag) {
+            radioRxFlag = false;
+            processRxPacket();
+            // Flush digi queue with randomised delay
+            uint32_t flushDeadline = millis() + DIGI_DELAY_MAX_MS + 100UL;
+            while (millis() < flushDeadline) { flushDigiQueue(); delay(10); }
+            // Reset window — active station keeps RX open
+            windowDeadline = millis() + CAD_RX_WINDOW_SOLAR_MS;
+            radioStartRx();
+        }
+        LowPower.idle(10);
+    }
+
+    DBGLN(F("[CAD] RX window expired — returning to CAD sentinel"));
+}
+
+// ============================================================
+// CAD DIGIPEATER — battery-optimised two-stage design
+//
+// Same Stage 1 CAD sentinel as solar mode.
+// Stage 2 is only entered if the triggering packet is from a
+// station that is new or has moved since last heard.
+// Stationary ground stations are received but not digipeated
+// and do not open the RX window, saving power.
+// Within an open RX window, only moving/new packets reset the
+// timer — a burst of stationary packets lets the window expire.
+// ============================================================
+void runDiGiCAD_Battery() {
+    if (!radioReady) radioInit();
+
+    // --- Stage 1: CAD sentinel ---
+    radioCadFlag = false;
+    radioStartCad();
+    uint32_t cadStart = millis();
+    while (!radioCadFlag && millis() - cadStart < 500) LowPower.idle(5);
+
+    if (!radioCadFlag) {
+        LowPower.deepSleep(CAD_SCAN_INTERVAL_MS);
+        return;
+    }
+
+    int result = radio.getChannelScanResult();
+    if (result != RADIOLIB_LORA_DETECTED) {
+        LowPower.deepSleep(CAD_SCAN_INTERVAL_MS);
+        return;
+    }
+
+    // Receive the triggering packet and apply movement filter
+    DBGLN(F("[CAD-BAT] Signal detected — receiving packet"));
+    radioRxFlag = false;
+    radioStartRx();
+    uint32_t rxStart = millis();
+    while (!radioRxFlag && millis() - rxStart < 5000UL) LowPower.idle(10);
+
+    if (!radioRxFlag) {
+        DBGLN(F("[CAD-BAT] No packet — returning to sentinel"));
+        return;
+    }
+    radioRxFlag = false;
+
+    bool openWindow = processRxPacketBattery();
+    if (!openWindow) {
+        // Stationary station — back to CAD immediately
+        return;
+    }
+
+    // --- Stage 2: active RX window ---
+    DBGLN(F("[CAD-BAT] Moving station — entering active RX window"));
+    uint32_t windowDeadline = millis() + CAD_RX_WINDOW_BATTERY_MS;
+    radioStartRx();
+
+    while (millis() < windowDeadline) {
+        if (radioRxFlag) {
+            radioRxFlag = false;
+            bool moved = processRxPacketBattery();
+            // Only reset the timer if a moving/new station was heard
+            if (moved) windowDeadline = millis() + CAD_RX_WINDOW_BATTERY_MS;
+            radioStartRx();
+        }
+        LowPower.idle(10);
+    }
+
+    DBGLN(F("[CAD-BAT] RX window expired — returning to CAD sentinel"));
 }
 
 // ============================================================
@@ -632,7 +848,10 @@ void loop() {
     flushDigiQueue();
     LowPower.idle(10);
 
-#elif OPERATING_MODE == MODE_DIGI_CAD
+#elif OPERATING_MODE == MODE_DIGI_CAD_SOLAR
     runDiGiCAD();
+
+#elif OPERATING_MODE == MODE_DIGI_CAD_BATTERY
+    runDiGiCAD_Battery();
 #endif
 }

@@ -105,12 +105,33 @@ within a few seconds of powering on.
 | `TRACKER_ONLY` | Yes | TX then Stop2 sleep | ~2–8 mA (GPS-dominated) |
 | `TRACKER_DIGI` | Yes | TX then continuous RX | ~5–6 mA |
 | `DIGI_ONLY` | No | Continuous RX always | ~6 mA |
-| `DIGI_CAD` | No | Channel Activity Detection (CAD) scan + deep sleep | **~0.04–0.1 mA** |
+| `DIGI_CAD_SOLAR` | No | Two-stage: CAD sentinel + full RX window, digipeats all | **~0.1 mA idle, ~6 mA active** |
+| `DIGI_CAD_BATTERY` | No | Two-stage: CAD sentinel + RX window for moving stations only | **~0.1 mA idle** |
 
-`DIGI_CAD` is the recommended mode for battery or solar operation. It uses
-Channel Activity Detection (CAD) to wake only when a LoRa preamble is present on
-the channel, missing the triggering packet but catching all subsequent ones.
-In a typical APRS environment this is fully acceptable digipeater behaviour.
+Both CAD modes use the same two-stage design to maximise detection
+reliability while minimising power:
+
+**Stage 1 — CAD sentinel (~100 µA):** The radio performs a 65 ms Channel
+Activity Detection scan every `CAD_SCAN_INTERVAL_MS` (default 1000 ms)
+continuously. Because LoRa CAD detects any chirp energy on the channel —
+not just a preamble — a scan interval equal to or shorter than the expected
+transmission length guarantees detection on the first transmission heard.
+
+**Stage 2 — Active RX window (~6 mA):** On detecting a signal the radio
+switches to full continuous receive. The window stays open as long as
+qualifying packets continue to arrive, then returns to Stage 1 after
+silence. What counts as "qualifying" differs between modes:
+
+- **`DIGI_CAD_SOLAR`** — any received packet resets the 6-minute window
+  and is digipeated. Suitable for solar or mains-powered installations
+  where power is not a constraint.
+
+- **`DIGI_CAD_BATTERY`** — only packets from stations that have **moved**
+  since they were last heard reset the window and are digipeated. Fixed
+  ground stations are received but silently ignored, saving significant
+  power at sites with regular beaconing ground stations nearby. The RX
+  window duration is set by `CAD_BEACON_INTERVAL_MS` plus a 15-second
+  buffer (see configuration below).
 
 ---
 
@@ -134,10 +155,15 @@ module this can drop below 1 mA average.
 **DIGI_ONLY** (continuous RX):
 Flat ~6 mA regardless of traffic. Suitable for mains or large solar.
 
-**DIGI_CAD** (15-scan batch, 2 s scan interval, 30 s inter-batch sleep):
-- Idle with no traffic: ~0.04 mA average
-- With moderate traffic (1 packet/min): ~0.1 mA average
-- With heavy traffic (1 packet/10 s): ~0.5 mA average
+**DIGI_CAD_SOLAR** (1 s CAD scan interval, 6 min RX window, all stations):
+- Idle with no traffic: ~0.1 mA average (continuous CAD sentinel)
+- With moderate traffic (1 packet/min): ~0.5 mA average
+- With heavy traffic (1 packet/10 s): ~6 mA (effectively continuous RX)
+
+**DIGI_CAD_BATTERY** (1 s CAD scan interval, moving stations only):
+- Quiet site, no moving stations: ~0.1 mA (same as solar idle)
+- Fixed ground station transmitting every 20 min: ~0.32 mA
+- Moving station active (balloon pass, vehicle): ~6 mA while in range
 
 ---
 
@@ -148,8 +174,10 @@ Flat ~6 mA regardless of traffic. Suitable for mains or large solar.
 | Mode | Average current | Estimated life |
 |------|----------------|----------------|
 | `DIGI_ONLY` continuous RX | ~6 mA | ~3 weeks |
-| `DIGI_CAD` quiet rural site | ~0.04 mA | **~8 years** |
-| `DIGI_CAD` moderate traffic | ~0.1 mA | **~3.5 years** |
+| `DIGI_CAD_SOLAR` quiet site | ~0.1 mA | **~3.4 years** |
+| `DIGI_CAD_SOLAR` moderate traffic | ~0.5 mA | **~8 months** |
+| `DIGI_CAD_BATTERY` quiet site | ~0.1 mA | **~3.4 years** |
+| `DIGI_CAD_BATTERY` fixed ground station nearby | ~0.32 mA | **~1 year** |
 | `TRACKER_ONLY` 120 s interval | ~2.5 mA | ~7 weeks |
 | `TRACKER_ONLY` 600 s interval | ~0.8 mA | ~5 months |
 
@@ -160,10 +188,11 @@ Flat ~6 mA regardless of traffic. Suitable for mains or large solar.
 
 ### Solar operation
 
-`DIGI_CAD` mode draws so little power at idle that even a very small solar
-panel can sustain it indefinitely. A typical 1 W garden solar panel with a
-small LiPo cell provides far more energy than the digipeater consumes in
-any realistic APRS traffic environment.
+`DIGI_CAD` mode at idle (~0.1 mA) is easily sustained by even a small
+salvaged solar panel — a typical lawn light panel produces far more current
+than the CAD sentinel consumes. When active traffic triggers Stage 2, RX
+current rises to ~6 mA, still well within the output of any small panel
+in reasonable daylight.
 
 For continuous RX (`DIGI_ONLY`), a panel delivering at least 600–700 mWh
 per day is needed, which is marginal for small panels in poor weather.
@@ -239,12 +268,56 @@ Pinout varies by module — uncomment the right block in `config.h`.
 
 - **DIGI_ONLY:** Listens continuously. Digipeats any packet with an
   unactivated `WIDE1-1` or `WIDE2-N` path.
-- **DIGI_CAD:** Runs Channel Activity Detection (CAD) scans every 2 seconds. On preamble detection,
-  switches to full RX and waits for the next complete packet.
+- **DIGI_CAD_SOLAR / DIGI_CAD_BATTERY:** Both run CAD scans every
+  `CAD_SCAN_INTERVAL_MS` (default 1 s) continuously. On detection, Stage 2
+  switches to full continuous RX. `DIGI_CAD_SOLAR` digipeats all stations
+  and resets the 6-minute window on every packet. `DIGI_CAD_BATTERY`
+  digipeats only stations that have moved since last heard, and only resets
+  the window for those stations — fixed ground stations are silently ignored.
+  See the battery mode configuration section for setting the RX window.
 - Both modes apply a random 80–450 ms delay before retransmitting to
   reduce collision probability with other digipeaters.
 - An 8-element CRC32 ring buffer suppresses duplicate packets.
 - Own beacon packets are never digipeated.
+
+---
+
+## DIGI_CAD_BATTERY — configuring the RX window
+
+In battery mode the active RX window is set by specifying the **expected
+beacon interval** of the moving stations you want to capture. The firmware
+automatically adds a 15-second buffer so timing variation never causes a
+missed packet.
+
+In `config.h`, uncomment the line that best matches your use case:
+
+```c
+// Uncomment ONE of these to match the expected moving station beacon interval:
+
+//#define CAD_BEACON_INTERVAL_MS    360000  // 6 min  — infrequent tracker
+#define CAD_BEACON_INTERVAL_MS      180000  // 3 min  — typical vehicle or balloon (default)
+//#define CAD_BEACON_INTERVAL_MS     60000  // 1 min  — fast vehicle
+//#define CAD_BEACON_INTERVAL_MS     30000  // 30 sec — high-rate balloon or tracker
+```
+
+The actual RX window will be your chosen interval plus 15 seconds:
+
+| `CAD_BEACON_INTERVAL_MS` | Actual RX window | Best for |
+|--------------------------|-----------------|----------|
+| 360000 (6 min) | 6 min 15 sec | Infrequent trackers |
+| **180000 (3 min)** | **3 min 15 sec** | **Typical vehicle / balloon — covers any interval ≤ 3 min, including 30 s (default)** |
+| 60000 (1 min) | 1 min 15 sec | Fast vehicle — covers any interval ≤ 1 min |
+| 30000 (30 sec) | 45 sec | High-rate balloon / tracker — tightest window |
+
+**How to choose:** set this to match the slowest beacon interval you expect
+from stations you want to digipeat. If a balloon transmits every 30 seconds
+and you set 3 minutes, you will still catch every packet — the window simply
+stays open longer than necessary. If you set 30 seconds and a station
+transmits every 3 minutes, the window will expire between transmissions and
+the station will be re-detected by the CAD sentinel on its next transmission,
+typically within one beacon cycle.
+
+Fixed ground stations are never digipeated regardless of this setting.
 
 ---
 

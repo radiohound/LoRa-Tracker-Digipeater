@@ -18,10 +18,12 @@
 // ============================================================
 // OPERATING MODE — pick exactly one
 // ============================================================
-#define MODE_TRACKER_ONLY   1   // TX beacon, sleep, repeat
-#define MODE_TRACKER_DIGI   2   // TX beacon, then RX/digipeat until next interval
-#define MODE_DIGI_ONLY      3   // RX/digipeat continuously, no GPS/beacon
-#define MODE_DIGI_CAD       4   // Low-power CAD digipeater
+#define MODE_TRACKER_ONLY      1   // TX beacon, sleep, repeat
+#define MODE_TRACKER_DIGI      2   // TX beacon, then RX/digipeat until next interval
+#define MODE_DIGI_ONLY         3   // RX/digipeat continuously, no GPS/beacon
+#define MODE_DIGI_CAD_SOLAR    4   // Two-stage CAD: sentinel + full RX window, digipeats all stations
+#define MODE_DIGI_CAD_BATTERY  5   // Two-stage CAD: only digipeats and opens RX window for stations that have moved
+#define MODE_DIGI_CAD          MODE_DIGI_CAD_SOLAR  // backwards-compatible alias
 
 #define OPERATING_MODE      MODE_TRACKER_DIGI
 
@@ -110,10 +112,46 @@
 
 // ============================================================
 // CAD DIGIPEATER
+// Two-stage design:
+//   Stage 1 — CAD sentinel: 65ms scans every CAD_SCAN_INTERVAL_MS, continuously.
+//             Guaranteed to catch any transmission >= CAD_SCAN_INTERVAL_MS long.
+//   Stage 2 — Active RX: entered on CAD trigger. Listens for up to
+//             the mode's RX window. Timer resets on each qualifying packet.
+//             Returns to Stage 1 after silence.
 // ============================================================
-#define CAD_BATCH_SIZE      15
-#define CAD_SCAN_INTERVAL_MS 2000
-#define CAD_BATCH_SLEEP_MS  30000
+#define CAD_SCAN_INTERVAL_MS        1000    // ms between CAD scans — must be <= transmission length
+
+// Solar mode (MODE_DIGI_CAD_SOLAR): power is not a concern.
+// Any station heard resets the window.
+#define CAD_RX_WINDOW_SOLAR_MS      360000  // 6 minutes
+
+// Battery mode (MODE_DIGI_CAD_BATTERY):
+// Set CAD_BEACON_INTERVAL_MS to the expected beacon interval of the
+// moving stations you want to capture. 15 seconds is automatically
+// added as a buffer to handle timing variation.
+// Only moving/new stations reset the timer — fixed ground stations
+// are ignored. Pick one:
+//
+//#define CAD_BEACON_INTERVAL_MS    360000  // 6 min  — infrequent tracker
+#define CAD_BEACON_INTERVAL_MS      180000  // 3 min  — typical vehicle or balloon (default)
+//#define CAD_BEACON_INTERVAL_MS     60000  // 1 min  — fast vehicle
+//#define CAD_BEACON_INTERVAL_MS     30000  // 30 sec — high-rate balloon or tracker
+//
+#define CAD_RX_WINDOW_BATTERY_MS    (CAD_BEACON_INTERVAL_MS + 15000UL)  // adds 15 s buffer
+
+// ============================================================
+// STATION TRACKING (MODE_DIGI_CAD_BATTERY only)
+// Tracks last known position per callsign. Packets from stations
+// that have not moved are not digipeated and do not open the RX
+// window, saving power at sites with fixed ground stations.
+// ============================================================
+#define STATION_TRACK_COUNT   20    // max number of stations to remember
+#define STATION_MOVE_THRESH_M 100   // meters of movement to consider a station "moved"
+
+// Return values for classifyAndUpdate()
+#define STATION_NEW           0     // never heard before
+#define STATION_MOVED         1     // heard before, has moved >= STATION_MOVE_THRESH_M
+#define STATION_STATIONARY    2     // heard before, has not moved
 
 // ============================================================
 // RF SWITCH — E77 MBL board
