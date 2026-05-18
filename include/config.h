@@ -22,12 +22,14 @@
 //   3 = DIGI_ONLY         RX/digipeat continuously, no GPS/beacon
 //   4 = DIGI_CAD_SOLAR    Two-stage CAD, digipeats all stations
 //   5 = DIGI_CAD_BATTERY  Two-stage CAD, moving stations only
+//   6 = SF_TEST           Alternate SF7 / SF12 beacons (bench/drive test)
 // ============================================================
 #define MODE_TRACKER_ONLY      1
 #define MODE_TRACKER_DIGI      2
 #define MODE_DIGI_ONLY         3
 #define MODE_DIGI_CAD_SOLAR    4
 #define MODE_DIGI_CAD_BATTERY  5
+#define MODE_SF_TEST           6
 #define MODE_DIGI_CAD          MODE_DIGI_CAD_SOLAR  // backwards-compatible alias
 
 #define OPERATING_MODE  2
@@ -72,6 +74,28 @@
 // BEACON
 // ============================================================
 #define BEACON_INTERVAL_S   5              // seconds between beacons
+
+// ============================================================
+// SF TEST (MODE_SF_TEST only)
+// Experimental: beacons every SF_TEST_INTERVAL_MS, alternating
+// between LORA_SF_TEST_A and LORA_SF_TEST_B. The comment is
+// replaced with "#<counter> HH:MM:SS" (UTC from GPS) so receiver
+// logs can be matched up by counter and timestamp regardless of
+// which SF reached them.
+//
+// Same TX power for both SFs (LORA_TX_POWER) so SF is the only
+// variable in the A/B comparison. Radio and GPS stay on
+// continuously — high power draw; bench/drive testing, not flight.
+//
+// Air time at BW 125 kHz, ~70-byte payload:
+//   SF7 CR4/5 ≈ 110 ms,   SF12 CR4/6 ≈ 2.8 s
+// At a 5 s interval, the SF12 slot has only ~2 s of margin.
+// ============================================================
+#define SF_TEST_INTERVAL_MS 5000UL
+#define LORA_SF_TEST_A      7               // sent first, on odd counters
+#define LORA_CR_TEST_A      5               //   paired CR (4/5) for SF7
+#define LORA_SF_TEST_B      12              // sent second, on even counters
+#define LORA_CR_TEST_B      6               //   paired CR (4/6) for SF12
 
 // ============================================================
 // GPS

@@ -136,6 +136,9 @@ void    gpsPowerOff();
 bool    waitForFix(uint32_t timeoutMs);
 void    sendBeacon();
 String  buildAPRSPacket();
+#if OPERATING_MODE == MODE_SF_TEST
+bool    sendSfTestBeacon(uint8_t sf, uint8_t cr, uint32_t txNum);
+#endif
 void    processRxPacket();
 bool    processRxPacketBattery();
 void    runDiGiCAD();
@@ -411,6 +414,53 @@ void sendBeacon() {
         radioTransmit(buildAPRSPacket());
     }
 }
+
+// ============================================================
+// SF TEST BEACON
+// Transmits a beacon at the requested SF/CR, replacing MY_COMMENT
+// with "#<txNum> HH:MM:SS" (UTC of the fix). Counter + timestamp
+// let the receiver pair packets even when one SF doesn't arrive.
+// Returns true only if a packet went out, so the caller's counter
+// has no phantom gaps while waiting for the first fix.
+// ============================================================
+#if OPERATING_MODE == MODE_SF_TEST
+bool sendSfTestBeacon(uint8_t sf, uint8_t cr, uint32_t txNum) {
+    // Returns as soon as a fresh 1 Hz PVT arrives; falls back to
+    // lastPos if none, so we still transmit on schedule.
+    waitForFix(2000);
+    if (!lastPos.valid) {
+        DBGLN(F("[SFTest] No position yet — skipping TX."));
+        return false;
+    }
+
+    radio.setSpreadingFactor(sf);
+    radio.setCodingRate(cr);
+
+    char comment[20];
+    snprintf(comment, sizeof(comment), "#%lu %02u:%02u:%02u",
+             (unsigned long)txNum,
+             (unsigned)lastPos.hour,
+             (unsigned)lastPos.minute,
+             (unsigned)lastPos.second);
+
+    String gpsData = APRSPacketLib::encodeGPSIntoBase91(
+        lastPos.lat, lastPos.lon,
+        lastPos.course, lastPos.speed,
+        String(APRS_SYMBOL_CODE),
+        true, (int)(lastPos.altM * 3.28084f));
+    String pkt = APRSPacketLib::generateBase91GPSBeaconPacket(
+        String(myCallsignFull),
+        String(APRS_DESTINATION),
+        String(BEACON_PATH),
+        String(APRS_SYMBOL_TABLE),
+        gpsData) + String(comment);
+
+    DBG(F("[SFTest] SF=")); DBG(sf);
+    DBG(F(" CR=4/")); DBG(cr);
+    DBG(F(" #")); DBGLN(txNum);
+    return radioTransmit(pkt);
+}
+#endif
 
 // ============================================================
 // DIGIPEATER
@@ -813,6 +863,10 @@ void setup() {
 
 #if OPERATING_MODE == MODE_DIGI_ONLY
     radioStartRx();
+#elif OPERATING_MODE == MODE_SF_TEST
+    // Radio and GPS stay powered for the whole test — no deep sleep.
+    gpsInit();
+    DBGLN(F("Mode: SF_TEST"));
 #endif
 }
 
@@ -853,5 +907,26 @@ void loop() {
 
 #elif OPERATING_MODE == MODE_DIGI_CAD_BATTERY
     runDiGiCAD_Battery();
+
+#elif OPERATING_MODE == MODE_SF_TEST
+    // Alternate SF7 / SF12 every SF_TEST_INTERVAL_MS: odd counters
+    // use _A, even use _B. The counter only advances when a TX
+    // actually goes out.
+    static uint32_t sfTestCounter = 0;
+    uint32_t slotStart = millis();
+
+    uint32_t nextCount = sfTestCounter + 1;
+    bool slotA = (nextCount & 1);
+    uint8_t sf = slotA ? LORA_SF_TEST_A : LORA_SF_TEST_B;
+    uint8_t cr = slotA ? LORA_CR_TEST_A : LORA_CR_TEST_B;
+    if (sendSfTestBeacon(sf, cr, nextCount)) {
+        sfTestCounter = nextCount;
+    }
+
+    // Idle for the rest of the slot; if SF12 overran it, fall through.
+    uint32_t elapsed = millis() - slotStart;
+    if (elapsed < SF_TEST_INTERVAL_MS) {
+        LowPower.idle(SF_TEST_INTERVAL_MS - elapsed);
+    }
 #endif
 }
