@@ -1,0 +1,13 @@
+{
+  "name": "libCATS",
+  "version": "0.0.0+vendored-txonly",
+  "description": "Vendored libCATS (https://github.com/CamK06/libCATS), BSD-2-Clause. TX-only subset: decode path / labrador-ldpc / cbor radio_iface removed. CATS whisker packet encoding (ID + GPS + comment) with CRC, whitening, LDPC and interleaving.",
+  "license": "BSD-2-Clause",
+  "frameworks": "*",
+  "platforms": "*",
+  "build": {
+    "srcDir": "src",
+    "includeDir": "include",
+    "flags": ["-w"]
+  }
+}

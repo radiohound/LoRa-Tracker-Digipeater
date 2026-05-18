@@ -27,6 +27,13 @@
 
 #include "config.h"
 
+#if CATS_ENABLED
+// libCATS is C; keep its symbols out of C++ name mangling.
+extern "C" {
+#include "cats/packet.h"
+}
+#endif
+
 #if BMP280_ENABLED
 #include <Adafruit_BMP280.h>
 #endif
@@ -138,6 +145,10 @@ String buildAPRSPacket();
 #if OPERATING_MODE == MODE_SF_TEST
 bool   sendSfTestBeacon(uint8_t sf, uint8_t cr, uint32_t txNum);
 #endif
+#if CATS_ENABLED
+void   catsRadioInit();
+bool   sendCatsBeacon();
+#endif
 
 void   runDiGiCAD();
 void   processRxPacket();
@@ -192,6 +203,47 @@ void radioInit() {
     radioReady = true;
     DBGLN(F("OK"));
 }
+
+#if CATS_ENABLED
+// ============================================================
+//  CATS RADIO INIT  (FSK)
+//
+//  Reconfigures the shared STM32WL radio from LoRa to raw 2-FSK
+//  for a CATS transmission. PHY per the CATS standard: 9600 bit/s,
+//  4.8 kHz deviation, plain 2-FSK (no Gaussian shaping). The HW
+//  emits the CATS preamble (0x55 x4 = 32 bits) and sync word
+//  (0xAB 0xCD 0xEF 0x12); HW CRC and whitening are OFF because
+//  libCATS already applies CRC-16, whitening, LDPC and
+//  interleaving in software. Call radioInit() afterwards to
+//  return the radio to LoRa for APRS.
+// ============================================================
+static const uint8_t CATS_SYNC_WORD[] = { 0xAB, 0xCD, 0xEF, 0x12 };
+
+void catsRadioInit() {
+    radio.setRfSwitchTable(rfswitch_pins, rfswitch_table);
+
+    DBG(F("[CATS] FSK init... "));
+    int state = radio.beginFSK(CATS_FREQ, CATS_BITRATE, CATS_FREQ_DEV,
+                               156.2, CATS_TX_POWER, 32, TCXO_VOLTAGE);
+    if (state != RADIOLIB_ERR_NONE) {
+        DBG(F("failed, code ")); DBGLN(state);
+        radioReady = false;
+        return;
+    }
+
+    radio.setSyncWord((uint8_t*)CATS_SYNC_WORD, sizeof(CATS_SYNC_WORD));
+    radio.setDataShaping(RADIOLIB_SHAPING_NONE);
+    radio.setEncoding(RADIOLIB_ENCODING_NRZ);
+    radio.setCRC(0);
+    radio.setWhitening(false);
+    if (radio.setCurrentLimit(LORA_OCP_MA) == RADIOLIB_ERR_INVALID_CURRENT_LIMIT) {
+        DBGLN(F("[CATS] Invalid OCP!"));
+    }
+
+    radioReady = false;   // LoRa config no longer valid
+    DBGLN(F("OK"));
+}
+#endif
 
 // ============================================================
 //  GPS INIT
@@ -402,6 +454,12 @@ void loop() {
     radioInit();
     gpsInit();
     sendBeacon();
+#if CATS_ENABLED
+    // Same GPS fix, second protocol: switch radio to FSK and beacon
+    // on CATS. No LoRa restore needed — we deep-sleep then re-init.
+    catsRadioInit();
+    sendCatsBeacon();
+#endif
     gpsPowerOff();
     radioSleep();
     enterDeepSleep((uint32_t)BEACON_INTERVAL_S * 1000UL);
@@ -410,6 +468,13 @@ void loop() {
     radioInit();
     gpsInit();
     sendBeacon();
+#if CATS_ENABLED
+    // Same GPS fix, second protocol: switch radio to FSK, beacon on
+    // CATS, then restore LoRa before resuming digipeat RX.
+    catsRadioInit();
+    sendCatsBeacon();
+    radioInit();
+#endif
     gpsPowerOff();
     radioStartRx();
     uint32_t end = millis() + (uint32_t)BEACON_INTERVAL_S * 1000UL;
@@ -654,6 +719,72 @@ void sendBeacon() {
 #endif
     radioTransmit(buildAPRSPacket());
 }
+
+#if CATS_ENABLED
+// ============================================================
+//  CATS BEACON
+//
+//  Builds a CATS packet (Identification + GPS + Comment whiskers)
+//  from the most recent fix in lastPos, runs it through the
+//  libCATS pipeline (CRC-16 + whitening + LDPC + interleaving),
+//  prepends the 2-byte little-endian payload length (the radio HW
+//  supplies the preamble + sync word), and transmits it as a raw
+//  FSK packet. Assumes catsRadioInit() was already called and
+//  lastPos is fresh (sendBeacon() ran waitForFix() just before).
+//
+//  GPS whisker units (CATS standard, whiskertypes/gps.tex):
+//    lat/lon decimal degrees, altitude metres, speed m/s,
+//    heading byte = radians*128/pi  ==  degrees*128/180,
+//    max error metres (0 = unspecified).
+// ============================================================
+bool sendCatsBeacon() {
+    if (!lastPos.valid) {
+        DBGLN(F("[CATS] No position — skipping TX."));
+        return false;
+    }
+
+    // libCATS returns CATS_SUCCESS (1) / CATS_FAIL (0); those enum names
+    // live in cats/error.h, which also defines a `throw` macro we keep
+    // out of this C++ TU — so test the boolean result directly.
+    cats_packet_t* pkt = NULL;
+    if (!cats_packet_prepare(&pkt) || pkt == NULL) {
+        DBGLN(F("[CATS] prepare failed"));
+        return false;
+    }
+
+    cats_packet_add_identification(pkt, MY_CALLSIGN, CATS_SSID, CATS_ICON);
+
+    float   speedMps = lastPos.speed * 0.514444f;             // knots -> m/s
+    uint8_t heading  = (uint8_t)((lastPos.course * 128 + 90) / 180);
+    cats_packet_add_gps(pkt, (double)lastPos.lat, (double)lastPos.lon,
+                        lastPos.altM, 0, heading, speedMps);
+
+    cats_packet_add_comment(pkt, MY_COMMENT);
+
+    // Static scratch keeps the libCATS expansion buffer off the stack.
+    // Frame = [len_lo][len_hi][libCATS-encoded payload].
+    static uint8_t frame[600];
+    const size_t hdr = 2;
+    uint16_t payloadLen = cats_packet_encode(pkt, frame + hdr);
+    cats_packet_destroy(&pkt);
+
+    if (payloadLen == 0 || (size_t)payloadLen + hdr > sizeof(frame)) {
+        DBGLN(F("[CATS] encode failed / too big"));
+        return false;
+    }
+    frame[0] = (uint8_t)payloadLen;
+    frame[1] = (uint8_t)(payloadLen >> 8);
+    size_t frameLen = hdr + payloadLen;
+
+    DBG(F("[CATS] TX ")); DBG(frameLen); DBGLN(F(" bytes"));
+    int state = radio.transmit(frame, frameLen);
+    if (state != RADIOLIB_ERR_NONE) {
+        DBG(F("[CATS] TX failed, code ")); DBGLN(state);
+        return false;
+    }
+    return true;
+}
+#endif
 
 // ============================================================
 //  SF TEST BEACON

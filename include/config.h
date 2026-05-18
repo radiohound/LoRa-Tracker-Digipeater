@@ -156,6 +156,39 @@
 #define LORA_CR_TEST_B       6        //   paired CR (4/6) for SF12
 
 // ------------------------------------------------------------
+//  CATS  (Communication And Telemetry System) — dual-protocol
+//
+//  When CATS_ENABLED, the tracker modes (TRACKER_ONLY /
+//  TRACKER_DIGI) send an extra position beacon on the CATS
+//  network after each APRS beacon. CATS is raw 2-FSK at 9600
+//  bit/s on 70 cm with a software FEC stack (CRC-16 + whitening
+//  + LDPC + interleaving) handled by the vendored libCATS. The
+//  packet carries Identification + GPS + Comment whiskers.
+//
+//  PHY values are from the CATS standard
+//  (https://gitlab.scd31.com/cats/cats-standard — rf.tex/header.tex):
+//    Carrier 430.500 MHz, 2-FSK, 9600 bit/s, deviation 4.8 kHz.
+//    On-air frame: preamble 0x55 x4, sync 0xAB 0xCD 0xEF 0x12,
+//    2-byte little-endian payload length, then libCATS-encoded
+//    data. The radio supplies the preamble + sync word; libCATS
+//    output is payload only. (Framing constants live in main.cpp.)
+//
+//  The radio is the SAME STM32WL chip used for LoRa APRS — it is
+//  reconfigured to FSK for the CATS TX and back to LoRa after.
+//  Costs one extra FSK packet (~tens of ms at 9600 bps) plus a
+//  radio re-init per beacon cycle. Set CATS_ENABLED to 0 to
+//  exclude all CATS code and the libCATS dependency entirely.
+// ------------------------------------------------------------
+#define CATS_ENABLED       1            // 1 = also TX CATS in tracker modes
+#define CATS_FREQ          430.500      // MHz, 70cm CATS calling frequency
+#define CATS_BITRATE       9.6          // kbps (9600 bit/s) — RadioLib units
+#define CATS_FREQ_DEV      4.8          // kHz frequency deviation
+#define CATS_TX_POWER      LORA_TX_POWER // dBm (same PA as APRS)
+#define CATS_SSID          MY_SSID      // CATS SSID (reuses station SSID)
+#define CATS_ICON          0            // CATS map icon id (0 = default)
+// Callsign and comment reuse MY_CALLSIGN / MY_COMMENT.
+
+// ------------------------------------------------------------
 //  BMP280 BAROMETRIC ALTIMETER  (optional — on the same I2C bus as GPS)
 //
 //  When enabled and a BMP280 is detected, altitude is taken from
