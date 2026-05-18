@@ -24,11 +24,12 @@
 #include <SparkFun_u-blox_GNSS_Arduino_Library.h>
 #include <STM32LowPower.h>
 #include <STM32RTC.h>
+
+#include "config.h"
+
 #if BMP280_ENABLED
 #include <Adafruit_BMP280.h>
 #endif
-
-#include "config.h"
 
 // ============================================================
 //  DEBUG
@@ -134,6 +135,9 @@ void checkCutdown(float altM);
 
 void   sendBeacon();
 String buildAPRSPacket();
+#if OPERATING_MODE == MODE_SF_TEST
+bool   sendSfTestBeacon(uint8_t sf, uint8_t cr, uint32_t txNum);
+#endif
 
 void   runDiGiCAD();
 void   processRxPacket();
@@ -377,6 +381,12 @@ void setup() {
 #elif OPERATING_MODE == MODE_DIGI_CAD
     // CAD mode manages its own radio state — don't start RX here.
     DBGLN(F("Mode: DIGI_CAD"));
+
+#elif OPERATING_MODE == MODE_SF_TEST
+    // Bring GPS up once. Radio and GPS stay powered for the duration
+    // of the test — no deep sleep between 5 s TX slots.
+    gpsInit();
+    DBGLN(F("Mode: SF_TEST"));
 #endif
 }
 
@@ -419,6 +429,32 @@ void loop() {
     // CAD batch loop — run N scans per radio init cycle.
     // Re-init radio only at the start of each batch, not every scan.
     runDiGiCAD();
+
+#elif OPERATING_MODE == MODE_SF_TEST
+    // Alternate SF7 / SF12 every SF_TEST_INTERVAL_MS. Odd counters
+    // use _A, even use _B, so two SF7s arrive ~2× the interval apart
+    // and two SF12s arrive ~2× the interval apart.
+    static uint32_t sfTestCounter = 0;
+    uint32_t slotStart = millis();
+
+    // Determine the slot from what the next counter value WOULD be.
+    // We only commit the increment if the TX actually goes out — that
+    // way the counter sequence on-air has no phantom gaps from skipped
+    // TXs while waiting for the first GPS fix.
+    uint32_t nextCount = sfTestCounter + 1;
+    bool slotA = (nextCount & 1);
+    uint8_t sf = slotA ? LORA_SF_TEST_A : LORA_SF_TEST_B;
+    uint8_t cr = slotA ? LORA_CR_TEST_A : LORA_CR_TEST_B;
+    if (sendSfTestBeacon(sf, cr, nextCount)) {
+        sfTestCounter = nextCount;
+    }
+
+    // Idle the MCU for whatever remains of the 5 s slot. If the TX
+    // (especially SF12) overran the slot, fall straight through.
+    uint32_t elapsed = millis() - slotStart;
+    if (elapsed < SF_TEST_INTERVAL_MS) {
+        LowPower.idle(SF_TEST_INTERVAL_MS - elapsed);
+    }
 #endif
 }
 
@@ -618,6 +654,61 @@ void sendBeacon() {
 #endif
     radioTransmit(buildAPRSPacket());
 }
+
+// ============================================================
+//  SF TEST BEACON
+//
+//  Builds and transmits a beacon at the requested spreading
+//  factor, replacing MY_COMMENT with "#<txNum> HH:MM:SS" (UTC
+//  from GPS). Counter + timestamp let the receiver pair packets
+//  with matching transmissions even when one of the two SFs
+//  doesn't make it through.
+//
+//  Uses a short waitForFix() to keep lat/lon/altitude fresh; if
+//  no new fix is available, falls back to lastPos (last known
+//  position) so we still transmit on schedule.
+// ============================================================
+#if OPERATING_MODE == MODE_SF_TEST
+// Returns true if a packet was actually transmitted. The caller uses
+// this to gate the counter increment so the on-air sequence has no
+// phantom gaps while we're still waiting for the first GPS fix.
+bool sendSfTestBeacon(uint8_t sf, uint8_t cr, uint32_t txNum) {
+    // Refresh position/time. waitForFix returns as soon as a fresh
+    // 1 Hz PVT arrives, so this typically blocks <1 s once locked.
+    waitForFix(2000);
+    if (!lastPos.valid) {
+        DBGLN(F("[SFTest] No position yet — skipping TX."));
+        return false;
+    }
+
+    radio.setSpreadingFactor(sf);
+    radio.setCodingRate(cr);
+
+    char comment[20];
+    snprintf(comment, sizeof(comment), "#%lu %02u:%02u:%02u",
+             (unsigned long)txNum,
+             (unsigned)myGPS.getHour(),
+             (unsigned)myGPS.getMinute(),
+             (unsigned)myGPS.getSecond());
+
+    String gpsData = APRSPacketLib::encodeGPSIntoBase91(
+        lastPos.lat, lastPos.lon,
+        lastPos.course, lastPos.speed,
+        String(APRS_SYMBOL_CODE),
+        true, (int)(lastPos.altM * 3.28084f));
+    String pkt = APRSPacketLib::generateBase91GPSBeaconPacket(
+        String(myCallsignFull),
+        String(APRS_DESTINATION),
+        String(BEACON_PATH),
+        String(APRS_SYMBOL_TABLE),
+        gpsData) + String(comment);
+
+    DBG(F("[SFTest] SF=")); DBG(sf);
+    DBG(F(" CR=4/")); DBG(cr);
+    DBG(F(" #")); DBGLN(txNum);
+    return radioTransmit(pkt);
+}
+#endif
 
 // ============================================================
 //  STANDARD DIGIPEATER

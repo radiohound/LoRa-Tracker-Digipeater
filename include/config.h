@@ -20,14 +20,15 @@
 #define MODE_TRACKER_DIGI  1
 #define MODE_DIGI_ONLY     2
 #define MODE_DIGI_CAD      3
+#define MODE_SF_TEST       4
 
-#define OPERATING_MODE     MODE_DIGI_CAD   // <-- change this
+#define OPERATING_MODE     MODE_SF_TEST   // <-- change this
 
 // ------------------------------------------------------------
 //  STATION IDENTIFICATION
 // ------------------------------------------------------------
-#define MY_CALLSIGN        "N0CALL"
-#define MY_SSID            9
+#define MY_CALLSIGN        "K6ATV"
+#define MY_SSID            6
 #define MY_COMMENT         "STM32WLE5 LoRa APRS"
 
 #define APRS_SYMBOL_TABLE  '/'
@@ -128,6 +129,31 @@
 //     {STM32WLx::MODE_RX,    {HIGH, LOW}},  \
 //     {STM32WLx::MODE_TX_LP, {LOW,  HIGH}}, \
 //     END_OF_MODE_TABLE
+
+// ------------------------------------------------------------
+//  SF TEST MODE  (MODE_SF_TEST only)
+//
+//  Experimental: transmits a beacon every SF_TEST_INTERVAL_MS,
+//  alternating between LORA_SF_TEST_A and LORA_SF_TEST_B so two
+//  back-to-back packets on the same SF arrive ~2× the interval
+//  apart. The comment is replaced with "#<counter> HH:MM:SS"
+//  (UTC from GPS) so receiver logs can be matched up by counter
+//  and timestamp regardless of which SF reached them.
+//
+//  Same TX power for both SFs (LORA_TX_POWER) so SF is the only
+//  variable in the A/B comparison. Radio and GPS are kept on
+//  continuously — power draw is high; this mode is for bench /
+//  drive testing, not flight.
+//
+//  Air time at BW=125 kHz, CR=4/5, ~70-byte payload:
+//    SF7  ≈ 110 ms,   SF12 ≈ 2.5 s
+//  At a 5 s interval, the SF12 slot has only ~2 s of margin.
+// ------------------------------------------------------------
+#define SF_TEST_INTERVAL_MS  5000UL
+#define LORA_SF_TEST_A       7        // sent first, on odd counters
+#define LORA_CR_TEST_A       5        //   paired CR (4/5) for SF7
+#define LORA_SF_TEST_B       12       // sent second, on even counters
+#define LORA_CR_TEST_B       6        //   paired CR (4/6) for SF12
 
 // ------------------------------------------------------------
 //  BMP280 BAROMETRIC ALTIMETER  (optional — on the same I2C bus as GPS)
