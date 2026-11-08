@@ -18,6 +18,7 @@ firmware by K6ATV for RF switch pinout, TCXO voltage, and radio init sequence.
 |--------|---------|
 | **`main`** | General-purpose LoRa APRS tracker and digipeater. Four operating modes: `TRACKER_ONLY`, `TRACKER_DIGI`, `DIGI_ONLY`, `DIGI_CAD`. |
 | **`balloon-digi`** | Adds `MODE_BALLOON_DIGI` — a low-power ground station digipeater that autonomously acquires and tracks a specific balloon callsign. |
+| **`lacf3-digi`** | Adds a separate build, `e77_lacf3_digi`: a digipeat-only firmware that relays **LACF 3.0** frames without the PPM tables, and plain LoRa APRS frames. See [LACF 3.0 digipeater](#lacf-30-digipeater-lacf3-digi-branch). |
 
 ---
 
@@ -27,6 +28,9 @@ firmware by K6ATV for RF switch pinout, TCXO voltage, and radio init sequence.
 platformio.ini        — build/upload config and library deps
 include/config.h      — ALL user settings (callsign, mode, pins…)
 src/main.cpp          — firmware
+src/digi3/            — the LACF 3.0 digipeater (environment e77_lacf3_digi; settings in config_digi3.h)
+lib/lacf3/            — LACF 3.0 frame code (hb3.c, from lora-aprs-ideas)
+test/host/            — PC test of the LACF 3.0 digipeater against the reference vectors
 ```
 
 ---
@@ -427,6 +431,50 @@ This cannot be worked around in software.
   on SPI alongside the E77. This is how RS41 sondes work.
 
 ---
+
+## LACF 3.0 digipeater (`lacf3-digi` branch)
+
+A second firmware in the same project, built by the PlatformIO environment **`e77_lacf3_digi`**
+(in VS Code: PlatformIO sidebar, `e77_lacf3_digi`, Upload). It is digipeat only: no GPS, no iGate,
+no tracking. Settings are in `src/digi3/config_digi3.h`; the tracker settings in `include/config.h` are not used.
+
+What it repeats:
+
+| Frame received | What it sends |
+|---|---|
+| Plain LoRa APRS (`3C FF 01` + text) | the same text with the new path |
+| **LACF 3.0** (`3C FF 03`, proposal 3.0.0-dev.1) | relayed "without the model" (spec 12, Relay step 8): structure and CRC checked, path rewritten, the compressed content copied byte for byte, this relay's RXT tuple (RSSI, SNR, frequency offset, time to hop) added |
+| LACF 2.0 (`3C FF 02`) | nothing: checking a 2.0 frame needs the PPM tables (about 152 KB), which this build leaves out |
+
+Path rule (the same as the LoRa APRS Pi): the first unused hop decides. `fill-in` repeats `WIDE1-1` and
+packets addressed to its callsign; `wide` (the default, for a high site) also `WIDE2-1` and `WIDE2-2`
+(`WIDE2-2` becomes `MYCALL*,WIDE2-1`). It never repeats a path that breaks the WIDEn-N rule, its own
+packets, a packet it already repeated, or the same packet twice within 30 seconds.
+
+Before each transmission it waits a random 100 to 500 ms and checks the channel with CAD; if the channel
+is busy it waits 0.5 to 2 s and looks again (6 times, then drops the packet). A watchdog restarts it if
+the loop ever stops for 20 seconds. It beacons a fixed position as plain text (set `BEACON_LAT`/`BEACON_LON`),
+and does nothing at all until `MY_CALLSIGN` is changed from `N0CALL`.
+
+Size, built 8 November 2026 (RadioLib 7.8.1, Arduino STM32 core, arm-none-eabi-gcc 13.2, `-Os`):
+
+| | Used | Of |
+|---|---|---|
+| Flash | 73 KB (Arduino core and HAL 25 KB, RadioLib 20 KB, C library 17 KB, digipeater 6 KB, LACF 3 frame code 5.5 KB) | 256 KB |
+| RAM, fixed | 8 KB | 64 KB |
+| Stack, deepest path (receive, decide, relay) | about 6.5 KB | |
+
+The digipeater logic is in `src/digi3/digi3_core.c`, plain C with no Arduino code, and is tested on a PC
+against the reference vectors of lora-aprs-ideas (1,013 relay vectors, all identical to the reference,
+plus plain-frame and RXT cases):
+
+```
+make -C test/host VECTORS=/path/to/lora-aprs-ideas/test
+```
+
+Not yet tried on the air. The radio set-up (RF switch, TCXO 1.7 V) is the one PicoTrack uses on the
+E77 MBL board. Power: it listens all the time, so expect about 5 to 7 mA at 3.3 V (the radio in receive
+plus the processor in sleep mode between interrupts), plus the transmissions.
 
 ## Known caveats
 
