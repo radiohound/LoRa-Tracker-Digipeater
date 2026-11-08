@@ -1,10 +1,12 @@
 // ============================================================
-// LACF 3.0 digipeater for the STM32WLE5 (Ebyte E77-400MBL-01)
+// LACF 3.0 digipeater for the STM32WLE5 (Ebyte E77-400MBL-01), with the PPM tables
 //
-// Digipeat only: listens all the time, repeats plain LoRa APRS frames as text and LACF 3.0 frames
-// "without the model" (spec 12 of radiohound/lora-aprs-ideas, proposal 3.0.0-dev.1): the path is
-// rewritten, the compressed content is copied byte for byte and this relay's RXT tuple is added.
-// No PPM tables, no GPS, no iGate. LACF 2.0 frames are not repeated (they need the tables).
+// Digipeat only: listens all the time. LACF 3.0 frames (spec 12 of radiohound/lora-aprs-ideas,
+// proposal 3.0.0-dev.1) are decoded in full and checked with the model, then relayed with the path
+// rewritten, the compressed content copied byte for byte and this relay's RXT tuple added; a frame
+// with a model this build does not hold is relayed without the model. Plain LoRa APRS frames are
+// repeated as text, or re-encoded as LACF 3.0 when TX_FORMAT_LACF3 is 1. No GPS, no iGate.
+// LACF 2.0 frames are not repeated.
 //
 // Radio set-up as in PicoTrack and LoRa-Tracker-Digipeater (K6ATV): RF switch on PA6/PA7/PB3, TCXO 1.7 V.
 // Settings: src/digi3/config_digi3.h.  Core logic (tested on a PC): src/digi3/digi3_core.c.
@@ -16,6 +18,9 @@
 #include "digi3_core.h"
 #include "config_digi3.h"
 #include "hb3.h"
+#ifndef D3_WITH_MODEL
+#error "this branch needs the PPM tables: build the e77_lacf3_digi_full environment (it defines D3_WITH_MODEL)"
+#endif
 
 #if DEBUG_SERIAL
   #define LOG(...)   Serial.print(__VA_ARGS__)
@@ -54,6 +59,7 @@ static Seen seen[DEDUPE_SLOTS];
 static uint8_t seenNext = 0;
 
 // ---- counters ----
+static uint32_t nDecoded = 0, nConverted = 0;
 static uint32_t nHeard = 0, nCrc = 0, nRelayPlain = 0, nRelayLacf3 = 0, nDup = 0, nBusyDrop = 0, nQueueFull = 0, nBeacons = 0;
 static uint32_t nWhy[D3_REASONS];
 
@@ -135,6 +141,13 @@ static void handleRx()
     int r = callsignSet ? d3_decide(fr, n, myCall, DIGI_MODE, job) : D3_NOT_SERVED;
     LOG(F("[RX] ")); LOG(n); LOG(F(" B ")); LOG(rssi, 0); LOG(F(" dBm ")); LOG(snr, 1); LOG(F(" dB ")); LOG((long)fo); LOG(F(" Hz: "));
     if (r != D3_OK) { nWhy[r]++; LOGLN(d3_reason(r)); return; }
+    if (job->decoded) {
+        nDecoded++;
+#if LOG_DECODED
+        LOG(F("decoded ")); LOGLN(d3_last_decoded()); LOG(F("      "));
+#endif
+    }
+    job->convert = (job->fmt == D3_FMT_PLAIN && TX_FORMAT_LACF3) ? 1 : 0;
     uint32_t now = millis();
     if (seenRecently(job->key, now)) { nDup++; LOGLN(F("duplicate")); return; }
     remember(job->key, now);
@@ -143,7 +156,7 @@ static void handleRx()
     slot->dueMs = now + randomBetween(DIGI_DELAY_MIN_MS, DIGI_DELAY_MAX_MS);
     slot->rxEndMs = endMs ? endMs : now;
     slot->rssi = rssi; slot->snr = snr; slot->fo = fo;
-    LOG(job->fmt == D3_FMT_LACF3 ? F("LACF3 relay ") : F("plain repeat ")); LOGLN(job->text);
+    LOG(job->fmt == D3_FMT_LACF3 ? (job->decoded ? F("LACF3 relay ") : F("LACF3 relay without the model ")) : (job->convert ? F("plain, sent as LACF3 ") : F("plain repeat "))); LOGLN(job->text);
 }
 
 // ============================================================
@@ -182,6 +195,7 @@ static void transmitDue()
         int16_t st = radio.transmit(out, len);
         IWatchdog.reload();
         if (st == RADIOLIB_ERR_NONE) {
+            if (s.job.fmt == D3_FMT_PLAIN && s.job.convert && out[2] == 0x03) nConverted++;
             if (s.rxEndMs == 0) nBeacons++;
             else if (s.job.fmt == D3_FMT_LACF3) nRelayLacf3++;
             else nRelayPlain++;
@@ -214,7 +228,7 @@ static void queueBeacon()
     int w = snprintf(slot->job.text, sizeof slot->job.text, "%s>%s%s%s:!%s%s", myCall, APRS_DESTINATION,
                      sizeof(BEACON_PATH) > 1 ? "," : "", BEACON_PATH, pos, BEACON_COMMENT);
     if (w <= 0 || w >= (int)sizeof slot->job.text) return;
-    slot->job.fmt = D3_FMT_PLAIN; slot->job.text_len = (uint16_t)w; slot->job.rx_len = 0;
+    slot->job.fmt = D3_FMT_PLAIN; slot->job.text_len = (uint16_t)w; slot->job.rx_len = 0; slot->job.decoded = 0; slot->job.convert = TX_FORMAT_LACF3;
     slot->used = true; slot->tries = 0; slot->dueMs = millis(); slot->rxEndMs = 0;
     LOG(F("[Beacon] ")); LOGLN(slot->job.text);
 }
@@ -225,7 +239,8 @@ static void printStats()
     LOG(F(", repeated plain ")); LOG(nRelayPlain); LOG(F(", relayed LACF3 ")); LOG(nRelayLacf3);
     LOG(F(", duplicates ")); LOG(nDup); LOG(F(", LACF2 skipped ")); LOG(nWhy[D3_LACF2]);
     LOG(F(", damaged ")); LOG(nWhy[D3_BAD_FRAME]); LOG(F(", busy drops ")); LOG(nBusyDrop);
-    LOG(F(", queue full ")); LOG(nQueueFull); LOG(F(", beacons ")); LOGLN(nBeacons);
+    LOG(F(", queue full ")); LOG(nQueueFull); LOG(F(", beacons ")); LOG(nBeacons);
+    LOG(F(", LACF3 decoded ")); LOG(nDecoded); LOG(F(", sent as LACF3 ")); LOGLN(nConverted);
 }
 
 // ============================================================
@@ -235,7 +250,7 @@ void setup()
     Serial.begin(DEBUG_BAUD);
     delay(300);
 #endif
-    LOGLN(F("=== LACF 3 digipeater (STM32WLE5), spec " HB3_SPEC_VERSION " ==="));
+    LOGLN(F("=== LACF 3 digipeater with the tables (STM32WLE5), spec " HB3_SPEC_VERSION " ==="));
     if (IWatchdog.isReset(true)) LOGLN(F("[Boot] restarted by the watchdog"));
     IWatchdog.begin((uint32_t)WATCHDOG_S * 1000000UL);
 
@@ -247,6 +262,7 @@ void setup()
 
     memset(txq, 0, sizeof txq);
     memset(seen, 0, sizeof seen);
+    LOG(F("[Boot] LACF destination list: ")); LOG(d3_init_model()); LOGLN(F(" names"));
     radioInit();
     randomSeed(radio.random(0x7FFFFFFF));
     startRx();

@@ -19,6 +19,7 @@ firmware by K6ATV for RF switch pinout, TCXO voltage, and radio init sequence.
 | **`main`** | General-purpose LoRa APRS tracker and digipeater. Four operating modes: `TRACKER_ONLY`, `TRACKER_DIGI`, `DIGI_ONLY`, `DIGI_CAD`. |
 | **`balloon-digi`** | Adds `MODE_BALLOON_DIGI` — a low-power ground station digipeater that autonomously acquires and tracks a specific balloon callsign. |
 | **`lacf3-digi`** | Adds a separate build, `e77_lacf3_digi`: a digipeat-only firmware that relays **LACF 3.0** frames without the PPM tables, and plain LoRa APRS frames. See [LACF 3.0 digipeater](#lacf-30-digipeater-lacf3-digi-branch). |
+| **`lacf3-digi-full`** | The same digipeater **with the two PPM tables**, build `e77_lacf3_digi_full`: decodes and checks every LACF 3.0 frame before relaying it, and can re-encode plain packets as LACF 3.0. See [With the PPM tables](#with-the-ppm-tables-lacf3-digi-full-branch). |
 
 ---
 
@@ -475,6 +476,39 @@ make -C test/host VECTORS=/path/to/lora-aprs-ideas/test
 Not yet tried on the air. The radio set-up (RF switch, TCXO 1.7 V) is the one PicoTrack uses on the
 E77 MBL board. Power: it listens all the time, so expect about 5 to 7 mA at 3.3 V (the radio in receive
 plus the processor in sleep mode between interrupts), plus the transmissions.
+
+### With the PPM tables (`lacf3-digi-full` branch)
+
+This branch adds LACF's two PPM tables (the *info-native* table for frames without a position block, kind 2,
+and the *comment-only* table for the comment after a position block, kind 3) and the PPM coder, and builds
+as **`e77_lacf3_digi_full`** (`-D D3_WITH_MODEL -D HB_FAST`).
+
+* Every LACF 3.0 frame is **decoded in full** and held to every receiver rule, the PPM content included,
+  before it is relayed. The relay then copies the content byte for byte, as spec 12 requires (re-encoding
+  would give the same bytes, so it is not redone). A frame whose model version or destination code this build
+  does not hold is still relayed without the model; a frame that fails a check is dropped.
+* The decoded packet is printed on the serial port (`LOG_DECODED`).
+* With **`TX_FORMAT_LACF3 1`**, plain packets heard (and the beacon) are **re-encoded as LACF 3.0** before
+  they are repeated: LACF content when it is shorter, otherwise LACF 3.0 plain content (spec 12, "A plain
+  text frame received, and the digipeater's transmit format is LACF"). Stock LoRa APRS firmware cannot read
+  those frames, so it is off by default.
+* `HB_FAST` uses the faster `build_freq` from lora-aprs-ideas (`tools/integrity/fast_freq.h`): the same
+  output, with 32-bit instead of 64-bit divisions, which the Cortex-M4 has no instruction for.
+
+Size, built 8 November 2026 with the same tools:
+
+| | Without the tables (`lacf3-digi`) | With the tables (`lacf3-digi-full`) |
+|---|---|---|
+| Flash | 73 KB | **236 KB of 256 KB (about 25 KB free)** |
+| of which PPM tables and coder | | 156 KB |
+| RAM, fixed | 8 KB | 9.5 KB |
+| Deepest stack (decode a frame) | about 6.5 KB | about 8 KB |
+
+Host test with the tables (`make -C test/host VECTORS=...`, also `FAST=0`): all 1,013 relay vectors, and all
+554 encode vectors of lora-aprs-ideas, which the digipeater's own conversion path encodes byte for byte as
+the reference and decodes back to the same packet. Decode and encode time on the STM32 is not yet measured
+(1.4 to 4.2 ms per decode on an ESP32 at 240 MHz; expect several times that at 48 MHz, still small next to a
+2-second SF12 packet).
 
 ## Known caveats
 

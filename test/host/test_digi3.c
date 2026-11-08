@@ -27,10 +27,10 @@ static void run_file(const char *dir, const char *name, int *n_ok, int *n_lines)
     f = fopen(path, "r");
     if (!f) { printf("FAIL cannot open %s\n", path); fails++; return; }
     while (fgets(line, sizeof line, f)) {
-        char *a, *b; uint8_t rx[300], want[300], got[300]; size_t rn, wn, gn = 0; d3_job_t job; hb3_info_t in; char front[300], call[16], gh[700], wh[700];
+        char *a, *b, *c; uint8_t rx[300], want[300], got[300]; size_t rn, wn, gn = 0; d3_job_t job; hb3_info_t in; char front[300], call[16], gh[700], wh[700];
         int k = 0, r; uint8_t tup[4];
         if (line[0] == '#' || line[0] == '\n') continue;
-        a = strtok(line, " \n"); b = strtok(NULL, " \n");
+        a = strtok(line, " \n"); b = strtok(NULL, " \n"); c = strtok(NULL, " \n");
         if (!a || !b) continue;
         (*n_lines)++;
         rn = unhex(a, rx, sizeof rx);
@@ -46,7 +46,14 @@ static void run_file(const char *dir, const char *name, int *n_ok, int *n_lines)
             wn = unhex(b, want, sizeof want);
             tohex(got, gn, gh); tohex(want, wn, wh);
             CHECK(gn == wn && !memcmp(got, want, wn), "%s: %s\n  want %s\n  got  %s (%s)", name, a, wh, gn ? gh : "nothing", d3_reason(r));
+#ifdef D3_WITH_MODEL
+            /* with the model, a frame the decoding relay accepts must have gone through the full decode (not the fallback without the model) */
+            { int decoding_relay_accepts = strstr(name, "passthrough") ? (c && strcmp(c, "-")) : 1;
+              CHECK(!decoding_relay_accepts || job.decoded, "%s: %s was relayed without decoding it", name, a);
+              if (gn == wn && !memcmp(got, want, wn) && (!decoding_relay_accepts || job.decoded)) (*n_ok)++; }
+#else
             if (gn == wn && !memcmp(got, want, wn)) (*n_ok)++;
+#endif
         }
     }
     fclose(f);
@@ -102,11 +109,52 @@ static void rxt_cases(void)
     CHECK(t[0] == 49 && t[1] == 74 && t[2] == 0 && t[3] == 31, "tuple %d %d %d %d", t[0], t[1], t[2], t[3]);
 }
 
+#ifdef D3_WITH_MODEL
+/* Encode vectors (TNC2 -> frame, '-' = sent as plain text) through the digipeater's own path: a plain job with convert set, and decode back. */
+static void run_encode(const char *dir, int *n_ok, int *n_lines)
+{
+    char path[512], line[4096]; FILE *f;
+    snprintf(path, sizeof path, "%s/vectors_hb3_v1.txt", dir);
+    f = fopen(path, "r");
+    if (!f) { printf("FAIL cannot open %s\n", path); fails++; return; }
+    while (fgets(line, sizeof line, f)) {
+        char *a, *b, back[400]; uint8_t fr[300], tx[300], out[300]; size_t fn, tn, on; d3_job_t job; hb3_info_t in; int dl, ok = 1;
+        if (line[0] == '#' || line[0] == '\n') continue;
+        a = strtok(line, " \n"); b = strtok(NULL, " \n");
+        if (!a || !b) continue;
+        (*n_lines)++;
+        tn = unhex(b, tx, sizeof tx - 1); tx[tn] = 0;
+        if (tn >= sizeof job.text) {                                      /* longer than any packet the radio can carry: only the codec itself */
+            on = hb3_encode((const char *)tx, tn, NULL, out, sizeof out, &in);
+            if (!strcmp(a, "-")) { CHECK(on == 0, "encode: a %zu-byte packet should not encode", tn); if (!on) (*n_ok)++; continue; }
+        } else {
+            memset(&job, 0, sizeof job); job.fmt = D3_FMT_PLAIN; job.convert = 1; memcpy(job.text, tx, tn); job.text_len = (uint16_t)tn;
+            on = d3_build(&job, "N0CALL", NULL, out, sizeof out);
+        }
+        if (!strcmp(a, "-")) {                                            /* not encodable: the digipeater sends it as plain text, if it fits */
+            ok = tn + 3 <= D3_MAX_FRAME ? (on == tn + 3 && out[2] == 0x01) : on == 0;
+            CHECK(ok, "encode: %s should go out as plain text", (char *)tx); }
+        else {
+            fn = unhex(a, fr, sizeof fr);
+            ok = on == fn && !memcmp(out, fr, fn);
+            CHECK(ok, "encode: %s differs from the reference", (char *)tx);
+            dl = hb3_decode(fr, fn, back, sizeof back, &in);
+            CHECK(dl == (int)tn && !memcmp(back, tx, tn), "decode: %s", a); ok = ok && dl == (int)tn;
+        }
+        if (ok) (*n_ok)++;
+    }
+    fclose(f);
+}
+#endif
+
 int main(int argc, char **argv)
 {
     const char *dir = argc > 1 ? argv[1] : "../lora-aprs-ideas/test";
     const char *files[] = { "vectors_hb3_passthrough_v1.txt", "vectors_hb3_relay_v1.txt", "vectors_hb3_relay_chain_v1.txt", "vectors_hb3_relay_edge_v1.txt" };
     size_t i;
+#ifdef D3_WITH_MODEL
+    CHECK(d3_init_model() == 62, "destination list");
+#endif
     plain_cases();
     rxt_cases();
     for (i = 0; i < sizeof files / sizeof files[0]; i++) {
@@ -114,6 +162,9 @@ int main(int argc, char **argv)
         run_file(dir, files[i], &ok, &lines);
         printf("%-34s %d of %d as the reference\n", files[i], ok, lines);
     }
+#ifdef D3_WITH_MODEL
+    { int ok = 0, lines = 0; run_encode(dir, &ok, &lines); printf("%-34s %d of %d as the reference (encode and decode)\n", "vectors_hb3_v1.txt", ok, lines); }
+#endif
     printf("%s: %d checks, %d failed\n", fails ? "FAILED" : "OK", checks, fails);
     return fails != 0;
 }

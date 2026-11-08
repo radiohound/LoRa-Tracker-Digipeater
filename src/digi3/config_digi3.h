@@ -1,8 +1,8 @@
 #pragma once
 // ============================================================
-// LACF 3.0 digipeater (digipeat only: no GPS, no iGate, no tracking)
+// LACF 3.0 digipeater with the PPM tables (digipeat only: no GPS, no iGate, no tracking)
 // Target: Ebyte E77-400MBL-01 (STM32WLE5CC)
-// Build:  PlatformIO environment "e77_lacf3_digi"
+// Build:  PlatformIO environment "e77_lacf3_digi_full"
 // ============================================================
 
 // ---- IDENTITY ------------------------------------------------
@@ -22,6 +22,14 @@
 #define DIGI_QUEUE_SIZE     4
 #define DEDUPE_SECONDS      30              // the same packet heard again within this time is not repeated again
 #define DEDUPE_SLOTS        32
+
+// ---- LACF 3.0 WITH THE MODEL (this branch carries the PPM tables) ----
+// LACF 3.0 frames are always decoded in full and checked before they are relayed; their compressed content is then copied byte for byte.
+// TX_FORMAT_LACF3 1: plain text packets (and the beacon) are re-encoded as LACF 3.0 before they go out, saving about a third of the airtime.
+// Only LACF-aware stations can read those frames (stock LoRa APRS firmware cannot), so leave it at 0 unless every receiver in range
+// that matters understands LACF 3.0.
+#define TX_FORMAT_LACF3     0
+#define LOG_DECODED         1               // print each decoded LACF 3.0 packet on the serial port
 
 // ---- BEACON (fixed position, plain text so every receiver can read it) ----
 // Leave LAT/LON at 0 to send no beacon.

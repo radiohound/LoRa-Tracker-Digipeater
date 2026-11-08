@@ -5,6 +5,12 @@
 #include <math.h>
 #include <string.h>
 #include <stdio.h>
+#ifdef D3_WITH_MODEL
+#include "lacf3_destinations.h"
+static char last_decoded[D3_MAX_TEXT + 1];
+int d3_init_model(void) { return hb3_set_list(LACF3_DESTINATIONS, (int)(sizeof LACF3_DESTINATIONS / sizeof LACF3_DESTINATIONS[0])); }
+const char *d3_last_decoded(void) { return last_decoded; }
+#endif
 
 static const char *const REASONS[D3_REASONS] = {
     "ok", "not an APRS frame", "LACF 2.0 frame (needs the tables)", "damaged or invalid frame", "our own packet",
@@ -91,7 +97,7 @@ static int split_tnc2(const char *t, size_t n, size_t *gt, size_t *comma_or_colo
     return *comma_or_colon > *gt + 1;
 }
 
-static int decide_text(const char *t, size_t n, const char *mycall, int mode, char *out, size_t cap, size_t *outlen, uint32_t *key)
+static int decide_text(const char *t, size_t n, const char *mycall, int mode, char *out, size_t cap, size_t *outlen, uint32_t *key, int as_plain)
 {
     size_t gt, de, colon, w; char np[200]; int r;
     if (!split_tnc2(t, n, &gt, &de, &colon)) return D3_NOT_APRS;
@@ -100,7 +106,7 @@ static int decide_text(const char *t, size_t n, const char *mycall, int mode, ch
     r = d3_new_path(t + de + 1, colon - de - 1, mycall, mode, np, sizeof np);
     if (r != D3_OK) return r;
     w = de + 1 + strlen(np) + (n - colon);
-    if (w + 1 > cap || w + 3 > D3_MAX_FRAME) return D3_TOO_LONG;          /* +3: the 3C FF 01 prefix on the air */
+    if (w + 1 > cap || (as_plain && w + 3 > D3_MAX_FRAME)) return D3_TOO_LONG;   /* +3: the 3C FF 01 prefix on the air (a LACF relay checks its own length) */
     memcpy(out, t, de); out[de] = ','; memcpy(out + de + 1, np, strlen(np)); memcpy(out + de + 1 + strlen(np), t + colon, n - colon); out[w] = 0;
     *outlen = w;
     if (key) { uint32_t h = d3_fnv1a(2166136261u, (const uint8_t *)t, de); *key = d3_fnv1a(h, (const uint8_t *)t + colon, n - colon); }
@@ -115,14 +121,35 @@ int d3_decide(const uint8_t *fr, size_t n, const char *mycall, int mode, d3_job_
         size_t outlen, i;
         for (i = 3; i < n; i++) if (fr[i] == 0 || fr[i] == '\r' || fr[i] == '\n') { if (fr[i] == 0) return D3_BAD_FRAME; n = i; break; }
         {
-            int r = decide_text((const char *)fr + 3, n - 3, mycall, mode, job->text, sizeof job->text, &outlen, &job->key);
+            int r = decide_text((const char *)fr + 3, n - 3, mycall, mode, job->text, sizeof job->text, &outlen, &job->key, 1);
             if (r != D3_OK) return r;
         }
-        job->fmt = D3_FMT_PLAIN; job->text_len = (uint16_t)outlen; job->rx_len = 0;
+        job->fmt = D3_FMT_PLAIN; job->text_len = (uint16_t)outlen; job->rx_len = 0; job->decoded = 0; job->convert = 0;
         return D3_OK;
     }
-    if (fr[2] == 0x03) {                                                  /* LACF 3.0: structure and CRC, no model */
+    if (fr[2] == 0x03) {
         char front[300], np[200]; hb3_info_t in; int len, r; size_t gt, de, colon, w; uint32_t h;
+#ifdef D3_WITH_MODEL
+        {   /* with the model: the full receiver check first (spec 12, Receiver), then the relay copies the content byte for byte (Relay) */
+            char full[D3_MAX_TEXT + 1]; size_t outlen; int dl = hb3_decode(fr, n, full, sizeof full, &in);
+            if (dl > 0) {
+                r = decide_text(full, (size_t)dl, mycall, mode, job->text, sizeof job->text, &outlen, NULL, 0);
+                if (r != D3_OK) return r;
+                memcpy(last_decoded, full, (size_t)dl + 1);
+                job->text_len = (uint16_t)outlen;
+                memcpy(job->rx, fr, n); job->rx_len = (uint16_t)n; job->fmt = D3_FMT_LACF3; job->decoded = 1; job->convert = 0;
+                h = d3_fnv1a(2166136261u, fr + 4, in.path_start - 4);
+                job->key = d3_fnv1a(h, fr + in.front_len, in.content_start + in.content_len - in.front_len);
+                /* the frame is now checked; building the relay needs no second PPM decode (the content is copied either way) */
+                { uint8_t tmp[D3_MAX_FRAME]; static const uint8_t probe[4] = { 0, 0, 0, 0 };
+                  if (!hb3_relay_to_passthrough(fr, n, job->text, job->text_len, mycall, probe, tmp, sizeof tmp)) return D3_TOO_LONG; }
+                return D3_OK;
+            }
+            /* not decoded: relay without the model only when what is missing is the model or the destination code; anything else is damage */
+            if (dl != HB3_ERR_VERSION && dl != HB3_ERR_FRONT) return D3_BAD_FRAME;
+        }
+#endif
+        /* without the model: structure and CRC only */
         len = hb3_decode_front(fr, n, front, sizeof front, &in);
         if (len <= 0) return D3_BAD_FRAME;
         if (!split_tnc2(front, (size_t)len, &gt, &de, &colon)) return D3_BAD_FRAME;
@@ -134,7 +161,7 @@ int d3_decide(const uint8_t *fr, size_t n, const char *mycall, int mode, d3_job_
         if (w + 1 > sizeof job->text) return D3_TOO_LONG;
         memcpy(job->text, front, de); job->text[de] = ','; memcpy(job->text + de + 1, np, strlen(np)); job->text[w - 1] = ':'; job->text[w] = 0;
         job->text_len = (uint16_t)w;
-        memcpy(job->rx, fr, n); job->rx_len = (uint16_t)n; job->fmt = D3_FMT_LACF3;
+        memcpy(job->rx, fr, n); job->rx_len = (uint16_t)n; job->fmt = D3_FMT_LACF3; job->decoded = 0; job->convert = 0;
         /* duplicate key: the received bytes of the source, the destination, the position block and the content field (spec 12, Relay step 8), not the path or RXT */
         h = d3_fnv1a(2166136261u, fr + 4, in.path_start - 4);
         job->key = d3_fnv1a(h, fr + in.front_len, in.content_start + in.content_len - in.front_len);
@@ -149,12 +176,19 @@ int d3_decide(const uint8_t *fr, size_t n, const char *mycall, int mode, d3_job_
 size_t d3_build(const d3_job_t *job, const char *mycall, const uint8_t *tuple, uint8_t *out, size_t cap)
 {
     if (job->fmt == D3_FMT_PLAIN) {
+#ifdef D3_WITH_MODEL
+        if (job->convert) {                                               /* re-encoded as LACF 3.0 (LACF or plain content, whichever is shorter), no RXT block */
+            hb3_info_t in; size_t n = hb3_encode(job->text, job->text_len, NULL, out, cap, &in);
+            if (n) return n;                                              /* 0: it cannot be encoded: sent as plain text below */
+        }
+#endif
         if (job->text_len + 3u > cap || job->text_len + 3u > D3_MAX_FRAME) return 0;
         out[0] = 0x3C; out[1] = 0xFF; out[2] = 0x01; memcpy(out + 3, job->text, job->text_len);
         return job->text_len + 3u;
     }
     if (job->fmt == D3_FMT_LACF3) {
         static const uint8_t none[4] = { 93, 93, 93, 93 };               /* 93 = not measured (3.0.0-dev.1) */
+        /* a decoded frame was checked with the model in d3_decide; hb3_relay_to would decode it again only to build the same bytes */
         return hb3_relay_to_passthrough(job->rx, job->rx_len, job->text, job->text_len, mycall, tuple ? tuple : none, out, cap);
     }
     return 0;

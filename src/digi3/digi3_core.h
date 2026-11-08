@@ -4,7 +4,11 @@
  *   3C FF 01 + TNC2 text   plain LoRa APRS: repeated as plain text with the new path
  *   3C FF 03 ...           LACF 3.0 (proposal 3.0.0-dev.1): relayed "without the model" (spec 12, Relay step 8): structure and CRC checked,
  *                          path rewritten, position block and content copied byte for byte, this relay's RXT tuple appended
- *   3C FF 02 ...           LACF 2.0: needs the PPM tables to check the content, which this build does not carry: not relayed
+ *   3C FF 02 ...           LACF 2.0: not relayed
+ *
+ * Built with D3_WITH_MODEL (the PPM tables, branch lacf3-digi-full), a LACF 3.0 frame is first decoded in full, with every receiver check
+ * (the PPM content too), then relayed with its content copied byte for byte; a frame whose model or destination code this build does not hold is
+ * still relayed without the model. A plain frame can be re-encoded as LACF 3.0 before it is repeated (d3_job_t.convert).
  *
  * The path rule is the one the LoRa APRS Pi uses (and spec 11 for LACF relays): the first hop not yet used decides.
  *   fill-in: WIDE1-1 -> MYCALL*        MYCALL -> MYCALL*
@@ -27,6 +31,7 @@ extern "C" {
 
 #define D3_MAX_FRAME 255
 #define D3_MAX_HOPS  8
+#define D3_MAX_TEXT  400    /* a decoded LACF frame of 255 bytes can be a longer TNC2 packet (its position block and destination expand) */
 
 /* What to send for one received packet. The frame is built at transmit time (d3_build), so the RXT time to hop can include the wait. */
 typedef struct {
@@ -34,8 +39,10 @@ typedef struct {
     uint16_t rx_len;
     uint8_t  rx[D3_MAX_FRAME];       /* LACF3: the received frame */
     uint16_t text_len;
-    char     text[D3_MAX_FRAME + 1]; /* plain: the packet to send (TNC2); LACF3: "src>dest,newpath:" */
+    char     text[D3_MAX_TEXT + 1];  /* plain: the packet to send (TNC2); LACF3: "src>dest,newpath:", or the whole new packet when decoded */
     uint32_t key;                    /* duplicate key: the same for every copy of the packet, whatever its path */
+    uint8_t  decoded;                /* LACF3: decoded in full with the model (text is then the whole new packet) */
+    uint8_t  convert;                /* plain: send it as a LACF 3.0 frame (needs D3_WITH_MODEL) */
 } d3_job_t;
 
 /* Why a frame was not repeated (for the debug log and the counters). */
@@ -59,6 +66,13 @@ uint8_t d3_rxt_time_to_hop(float ms, int sf, float bw_khz);
 void    d3_rxt_tuple(float rssi_dbm, float snr_db, float fo_hz, float tth_ms, int sf, float bw_khz, uint8_t out[4]);
 
 uint32_t d3_fnv1a(uint32_t h, const uint8_t *p, size_t n);
+
+#ifdef D3_WITH_MODEL
+/* Load the destination list (needed to decode and encode with the model). Returns the number of names. */
+int d3_init_model(void);
+/* The decoded packet of the last LACF 3.0 frame d3_decide accepted with the model (for the log). */
+const char *d3_last_decoded(void);
+#endif
 
 #ifdef __cplusplus
 }
