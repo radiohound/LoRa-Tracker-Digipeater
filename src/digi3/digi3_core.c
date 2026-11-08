@@ -5,11 +5,12 @@
 #include <math.h>
 #include <string.h>
 #include <stdio.h>
+static char last_text[D3_MAX_TEXT + 1];
+const char *d3_last_text(void) { return last_text; }
+static void keep_text(const char *t, size_t n) { if (n > D3_MAX_TEXT) n = D3_MAX_TEXT; memcpy(last_text, t, n); last_text[n] = 0; }
 #ifdef D3_WITH_MODEL
 #include "lacf3_destinations.h"
-static char last_decoded[D3_MAX_TEXT + 1];
 int d3_init_model(void) { return hb3_set_list(LACF3_DESTINATIONS, (int)(sizeof LACF3_DESTINATIONS / sizeof LACF3_DESTINATIONS[0])); }
-const char *d3_last_decoded(void) { return last_decoded; }
 #endif
 
 static const char *const REASONS[D3_REASONS] = {
@@ -46,11 +47,12 @@ static int wide_ok(const char *h, size_t l)
     return N >= 1 && N <= n && n <= 7;
 }
 
-int d3_new_path(const char *path, size_t plen, const char *mycall, int mode, char *out, size_t cap)
+int d3_new_path(const char *path, size_t plen, const char *mycall, int mode, char *out, size_t cap, int *named)
 {
     const char *hop[D3_MAX_HOPS + 1]; size_t hl[D3_MAX_HOPS + 1]; int nh = 0, used = -1, k, i;
     size_t s = 0, e, w = 0;
     char mystar[24];
+    if (named) *named = 0;
     if (mode != D3_MODE_FILLIN && mode != D3_MODE_WIDE) return D3_NOT_SERVED;
     while (s < plen) {                                                   /* split on commas, empty hops skipped */
         e = s; while (e < plen && path[e] != ',') e++;
@@ -65,7 +67,8 @@ int d3_new_path(const char *path, size_t plen, const char *mycall, int mode, cha
     snprintf(mystar, sizeof mystar, "%s*", mycall);
     {
         const char *repl[2]; int nr;
-        if (ieq(hop[k], hl[k], mycall) || ieq(hop[k], hl[k], "WIDE1-1")) { repl[0] = mystar; nr = 1; }
+        if (ieq(hop[k], hl[k], mycall)) { repl[0] = mystar; nr = 1; if (named) *named = 1; }
+        else if (ieq(hop[k], hl[k], "WIDE1-1")) { repl[0] = mystar; nr = 1; }
         else if (mode == D3_MODE_WIDE && ieq(hop[k], hl[k], "WIDE2-1")) { repl[0] = mystar; nr = 1; }
         else if (mode == D3_MODE_WIDE && ieq(hop[k], hl[k], "WIDE2-2")) { repl[0] = mystar; repl[1] = "WIDE2-1"; nr = 2; }
         else return D3_NOT_SERVED;
@@ -97,49 +100,99 @@ static int split_tnc2(const char *t, size_t n, size_t *gt, size_t *comma_or_colo
     return *comma_or_colon > *gt + 1;
 }
 
-static int decide_text(const char *t, size_t n, const char *mycall, int mode, char *out, size_t cap, size_t *outlen, uint32_t *key, int as_plain)
+static int used_hops(const char *path, size_t plen)
 {
-    size_t gt, de, colon, w; char np[200]; int r;
+    size_t i; int u = 0, k = 0;
+    for (i = 0; i < plen; i++) if (path[i] == '*') u = k + 1; else if (path[i] == ',') k++;
+    return u;                                                            /* the index after the last used hop = the number of hops used */
+}
+
+static uint32_t text_key(const char *t, size_t n, size_t de, size_t colon)
+{
+    uint32_t h = d3_fnv1a(2166136261u, (const uint8_t *)t, de);
+    return d3_fnv1a(h, (const uint8_t *)t + colon, n - colon);
+}
+
+static uint32_t frame_key(const uint8_t *fr, const hb3_info_t *in)   /* the received bytes of source, destination, position block and content field */
+{
+    uint32_t h = d3_fnv1a(2166136261u, fr + 4, in->path_start - 4);
+    return d3_fnv1a(h, fr + in->front_len, in->content_start + in->content_len - in->front_len);
+}
+
+static int plain_len(const uint8_t *fr, size_t n, size_t *len)       /* the text of a 3C FF 01 frame, up to a CR or LF; 0 if it holds a NUL */
+{
+    size_t i;
+    for (i = 3; i < n; i++) if (fr[i] == 0 || fr[i] == '\r' || fr[i] == '\n') { if (fr[i] == 0) return 0; n = i; break; }
+    *len = n - 3;
+    return 1;
+}
+
+int d3_identify(const uint8_t *fr, size_t n, uint32_t *key, int *used)
+{
+    size_t gt, de, colon, tl;
+    if (n < 4 || fr[0] != 0x3C || fr[1] != 0xFF) return 0;
+    if (fr[2] == 0x01) {
+        const char *t = (const char *)fr + 3;
+        if (!plain_len(fr, n, &tl) || !split_tnc2(t, tl, &gt, &de, &colon)) return 0;
+        *key = text_key(t, tl, de, colon);
+        *used = de < colon ? used_hops(t + de + 1, colon - de - 1) : 0;
+        return 1;
+    }
+    if (fr[2] == 0x03) {
+        char front[300]; hb3_info_t in; int len = hb3_decode_front(fr, n, front, sizeof front, &in);
+        if (len <= 0 || !split_tnc2(front, (size_t)len, &gt, &de, &colon)) return 0;
+        *key = frame_key(fr, &in);
+        *used = de < colon ? used_hops(front + de + 1, colon - de - 1) : 0;
+        return 1;
+    }
+    return 0;
+}
+
+static int decide_text(const char *t, size_t n, const char *mycall, int mode, char *out, size_t cap, size_t *outlen, uint32_t *key, int as_plain, d3_job_t *job)
+{
+    size_t gt, de, colon, w; char np[200]; int r, named;
     if (!split_tnc2(t, n, &gt, &de, &colon)) return D3_NOT_APRS;
     if (ieq(t, gt, mycall)) return D3_OWN;
     if (de == colon) return D3_NO_HOPS;                                  /* no path at all */
-    r = d3_new_path(t + de + 1, colon - de - 1, mycall, mode, np, sizeof np);
+    r = d3_new_path(t + de + 1, colon - de - 1, mycall, mode, np, sizeof np, &named);
     if (r != D3_OK) return r;
     w = de + 1 + strlen(np) + (n - colon);
     if (w + 1 > cap || (as_plain && w + 3 > D3_MAX_FRAME)) return D3_TOO_LONG;   /* +3: the 3C FF 01 prefix on the air (a LACF relay checks its own length) */
     memcpy(out, t, de); out[de] = ','; memcpy(out + de + 1, np, strlen(np)); memcpy(out + de + 1 + strlen(np), t + colon, n - colon); out[w] = 0;
     *outlen = w;
-    if (key) { uint32_t h = d3_fnv1a(2166136261u, (const uint8_t *)t, de); *key = d3_fnv1a(h, (const uint8_t *)t + colon, n - colon); }
+    if (key) *key = text_key(t, n, de, colon);
+    job->named = (uint8_t)named; job->used_hops = (uint8_t)used_hops(t + de + 1, colon - de - 1);
     return D3_OK;
 }
 
 int d3_decide(const uint8_t *fr, size_t n, const char *mycall, int mode, d3_job_t *job)
 {
+    last_text[0] = 0;
     if (n < 4 || fr[0] != 0x3C || fr[1] != 0xFF) return D3_NOT_APRS;
     if (fr[2] == 0x02) return D3_LACF2;
     if (fr[2] == 0x01) {                                                  /* plain LoRa APRS: TNC2 text */
-        size_t outlen, i;
-        for (i = 3; i < n; i++) if (fr[i] == 0 || fr[i] == '\r' || fr[i] == '\n') { if (fr[i] == 0) return D3_BAD_FRAME; n = i; break; }
+        size_t outlen, tl;
+        if (!plain_len(fr, n, &tl)) return D3_BAD_FRAME;
+        keep_text((const char *)fr + 3, tl);
         {
-            int r = decide_text((const char *)fr + 3, n - 3, mycall, mode, job->text, sizeof job->text, &outlen, &job->key, 1);
+            int r = decide_text((const char *)fr + 3, tl, mycall, mode, job->text, sizeof job->text, &outlen, &job->key, 1, job);
             if (r != D3_OK) return r;
         }
         job->fmt = D3_FMT_PLAIN; job->text_len = (uint16_t)outlen; job->rx_len = 0; job->decoded = 0; job->convert = 0;
         return D3_OK;
     }
     if (fr[2] == 0x03) {
-        char front[300], np[200]; hb3_info_t in; int len, r; size_t gt, de, colon, w; uint32_t h;
+        char front[300], np[200]; hb3_info_t in; int len, r, named; size_t gt, de, colon, w;
 #ifdef D3_WITH_MODEL
         {   /* with the model: the full receiver check first (spec 12, Receiver), then the relay copies the content byte for byte (Relay) */
             char full[D3_MAX_TEXT + 1]; size_t outlen; int dl = hb3_decode(fr, n, full, sizeof full, &in);
             if (dl > 0) {
-                r = decide_text(full, (size_t)dl, mycall, mode, job->text, sizeof job->text, &outlen, NULL, 0);
+                keep_text(full, (size_t)dl);
+                r = decide_text(full, (size_t)dl, mycall, mode, job->text, sizeof job->text, &outlen, NULL, 0, job);
                 if (r != D3_OK) return r;
-                memcpy(last_decoded, full, (size_t)dl + 1);
                 job->text_len = (uint16_t)outlen;
                 memcpy(job->rx, fr, n); job->rx_len = (uint16_t)n; job->fmt = D3_FMT_LACF3; job->decoded = 1; job->convert = 0;
-                h = d3_fnv1a(2166136261u, fr + 4, in.path_start - 4);
-                job->key = d3_fnv1a(h, fr + in.front_len, in.content_start + in.content_len - in.front_len);
+                job->key = frame_key(fr, &in);
                 /* the frame is now checked; building the relay needs no second PPM decode (the content is copied either way) */
                 { uint8_t tmp[D3_MAX_FRAME]; static const uint8_t probe[4] = { 0, 0, 0, 0 };
                   if (!hb3_relay_to_passthrough(fr, n, job->text, job->text_len, mycall, probe, tmp, sizeof tmp)) return D3_TOO_LONG; }
@@ -155,16 +208,16 @@ int d3_decide(const uint8_t *fr, size_t n, const char *mycall, int mode, d3_job_
         if (!split_tnc2(front, (size_t)len, &gt, &de, &colon)) return D3_BAD_FRAME;
         if (ieq(front, gt, mycall)) return D3_OWN;
         if (de == colon) return D3_NO_HOPS;
-        r = d3_new_path(front + de + 1, colon - de - 1, mycall, mode, np, sizeof np);
+        r = d3_new_path(front + de + 1, colon - de - 1, mycall, mode, np, sizeof np, &named);
         if (r != D3_OK) return r;
+        job->named = (uint8_t)named; job->used_hops = (uint8_t)used_hops(front + de + 1, colon - de - 1);
         w = de + 1 + strlen(np) + 1;
         if (w + 1 > sizeof job->text) return D3_TOO_LONG;
         memcpy(job->text, front, de); job->text[de] = ','; memcpy(job->text + de + 1, np, strlen(np)); job->text[w - 1] = ':'; job->text[w] = 0;
         job->text_len = (uint16_t)w;
         memcpy(job->rx, fr, n); job->rx_len = (uint16_t)n; job->fmt = D3_FMT_LACF3; job->decoded = 0; job->convert = 0;
         /* duplicate key: the received bytes of the source, the destination, the position block and the content field (spec 12, Relay step 8), not the path or RXT */
-        h = d3_fnv1a(2166136261u, fr + 4, in.path_start - 4);
-        job->key = d3_fnv1a(h, fr + in.front_len, in.content_start + in.content_len - in.front_len);
+        job->key = frame_key(fr, &in);
         /* check now that the relay can be built (a frame it would refuse is not queued) */
         { uint8_t tmp[D3_MAX_FRAME]; static const uint8_t probe[4] = { 0, 0, 0, 0 };
           if (!hb3_relay_to_passthrough(fr, n, job->text, job->text_len, mycall, probe, tmp, sizeof tmp)) return D3_TOO_LONG; }

@@ -4,12 +4,12 @@ VECTORS ?= ../../../lora-aprs-ideas/test
 FAST    ?= 1
 CFLAGS  ?= -O2 -g -Wall -Wextra -fsanitize=address,undefined
 DEFS    = -DD3_WITH_MODEL $(if $(filter 1,$(FAST)),-DHB_FAST)
-SRC = test_digi3.c ../../src/digi3/digi3_core.c ../../lib/lacf3/hb3.c ../../lib/lacf3/hbi.c ../../lib/lacf3/hbc.c
+SRC = test_digi3.c ../../src/digi3/digi3_core.c ../../src/digi3/neighbors.c ../../lib/lacf3/hb3.c ../../lib/lacf3/hbi.c ../../lib/lacf3/hbc.c
 
 test: test_digi3
 	./test_digi3 $(VECTORS)
 
-test_digi3: $(SRC) ../../src/digi3/digi3_core.h ../../lib/lacf3/hb3.h
+test_digi3: $(SRC) ../../src/digi3/digi3_core.h ../../src/digi3/neighbors.h ../../lib/lacf3/hb3.h
 	$(CC) $(CFLAGS) $(DEFS) -I../../src/digi3 -I../../lib/lacf3 -o $@ $(SRC) -lm
 
 clean:

@@ -494,19 +494,40 @@ as **`e77_lacf3_digi_full`** (`-D D3_WITH_MODEL -D HB_FAST`).
   those frames, so it is off by default.
 * `HB_FAST` uses the faster `build_freq` from lora-aprs-ideas (`tools/integrity/fast_freq.h`): the same
   output, with 32-bit instead of 64-bit divisions, which the Cortex-M4 has no instruction for.
+* **Listen before talk, as the LoRa APRS Pi:** the channel must be found free twice in a row (one CAD check,
+  about 4 symbols, 131 ms at SF12); a busy check waits 1 to 4 check slots, still receiving; after 10 s a
+  repeat is given up, a beacon tried again 30 s later. A packet arriving counts as busy.
+* **Cancel on hear, as the LoRa APRS Pi:** a repeat still waiting is dropped when another digipeater is heard
+  repeating the same packet first (the same source, destination and content, with more hops used).
+* **Station list:** every packet it can read updates a table of stations (`NEIGHBOR_SLOTS`, 48): where each
+  last reported itself, when, and for stations this digi hears on the air (directly, or as the digipeater of
+  someone else's packet) the signal and SNR. It is printed with the counters every `STATS_EVERY_MIN` minutes.
+  `src/digi3/neighbors.c`.
+* **Moving stations only (`DIGI_ONLY_MOVING 1`):** repeats a station's first position and any position at
+  least `MOVE_THRESHOLD_M` (100 m) from the last one it repeated for that station, and always repeats a path
+  that names this digi (a tracker set to path `K6ATV-10`) and destinations listed in `ALWAYS_REPEAT_TOCALLS`
+  (prefixes, e.g. `"APLAIX,APLAB"`). A fixed station heard again in the same place is not repeated (unless
+  `STATIONARY_REPEAT_MIN` is set); messages are repeated, other packets without a position are not
+  (`MOVING_REPEAT_MESSAGES`, `MOVING_REPEAT_OTHER`). Positions are read from uncompressed, compressed and Mic-E
+  packets, plain or LACF 3.0 (decoded with the model). Movement is measured from the last position repeated,
+  so a station creeping a few metres per beacon is still repeated once it has gone 100 m.
 
 Size, built 8 November 2026 with the same tools:
 
-| | Without the tables (`lacf3-digi`) | With the tables (`lacf3-digi-full`) |
-|---|---|---|
-| Flash | 73 KB | **236 KB of 256 KB (about 25 KB free)** |
-| of which PPM tables and coder | | 156 KB |
-| RAM, fixed | 8 KB | 9.5 KB |
-| Deepest stack (decode a frame) | about 6.5 KB | about 8 KB |
+| | Without the tables (`lacf3-digi`) | With the tables (`lacf3-digi-full`) | ... and moving stations only on |
+|---|---|---|---|
+| Flash | 73 KB | **240 KB of 256 KB (about 22 KB free)** | **245 KB (about 17 KB free)** |
+| of which PPM tables and coder | | 156 KB | 156 KB |
+| RAM, fixed | 8 KB | 12 KB (with the 48-station list) | 12 KB |
+| Deepest stack (decode a frame) | about 6.5 KB | about 8 KB | about 8 KB |
+
+The `lacf3-digi` branch (no tables) does not have the listen-before-talk timing, cancel on hear, the station
+list or moving stations only yet.
 
 Host test with the tables (`make -C test/host VECTORS=...`, also `FAST=0`): all 1,013 relay vectors, and all
 554 encode vectors of lora-aprs-ideas, which the digipeater's own conversion path encodes byte for byte as
-the reference and decodes back to the same packet. Decode and encode time on the STM32 is not yet measured
+the reference and decodes back to the same packet; positions (uncompressed, compressed, Mic-E, checked against
+aprslib), the moving-stations rules, the station list and the cancel-on-hear key. Decode and encode time on the STM32 is not yet measured
 (1.4 to 4.2 ms per decode on an ESP32 at 240 MHz; expect several times that at 48 MHz, still small next to a
 2-second SF12 packet).
 

@@ -42,6 +42,8 @@ typedef struct {
     char     text[D3_MAX_TEXT + 1];  /* plain: the packet to send (TNC2); LACF3: "src>dest,newpath:", or the whole new packet when decoded */
     uint32_t key;                    /* duplicate key: the same for every copy of the packet, whatever its path */
     uint8_t  decoded;                /* LACF3: decoded in full with the model (text is then the whole new packet) */
+    uint8_t  named;                  /* the hop used was this station's own callsign (the sender asked for this digi by name) */
+    uint8_t  used_hops;              /* hops already used in the path as received (for cancel-on-hear) */
     uint8_t  convert;                /* plain: send it as a LACF 3.0 frame (needs D3_WITH_MODEL) */
 } d3_job_t;
 
@@ -49,8 +51,17 @@ typedef struct {
 enum { D3_OK = 0, D3_NOT_APRS, D3_LACF2, D3_BAD_FRAME, D3_OWN, D3_PATH_RULE, D3_ALREADY, D3_NO_HOPS, D3_NOT_SERVED, D3_TOO_LONG, D3_REASONS };
 const char *d3_reason(int r);
 
-/* The path to repeat with. path is the TNC2 path ("WIDE1-1,WIDE2-1"), mycall upper case ("K6ATV-11"). Returns D3_OK and fills out, or a reason. */
-int d3_new_path(const char *path, size_t plen, const char *mycall, int mode, char *out, size_t cap);
+/* The path to repeat with. path is the TNC2 path ("WIDE1-1,WIDE2-1"), mycall upper case ("K6ATV-11"). Returns D3_OK and fills out, or a reason.
+ * named (may be NULL) is set to 1 when the hop used was mycall itself. */
+int d3_new_path(const char *path, size_t plen, const char *mycall, int mode, char *out, size_t cap, int *named);
+
+/* For cancel-on-hear: the duplicate key of a frame (the same as d3_decide gives) and how many hops of its path are used. Returns 1 if the frame
+ * could be read that far (plain text, or a LACF 3.0 frame whose structure and CRC are good). */
+int d3_identify(const uint8_t *fr, size_t n, uint32_t *key, int *used);
+
+/* The packet (TNC2, path as received) of the last frame d3_decide could read: plain text, or LACF 3.0 decoded with the model. Empty when it could
+ * not (a LACF frame relayed without the model, a damaged frame). For the neighbour list and "moving stations only". */
+const char *d3_last_text(void);
 
 /* Decide for one received frame; on D3_OK the job holds what is needed to build the repeat. */
 int d3_decide(const uint8_t *fr, size_t n, const char *mycall, int mode, d3_job_t *job);
@@ -70,8 +81,6 @@ uint32_t d3_fnv1a(uint32_t h, const uint8_t *p, size_t n);
 #ifdef D3_WITH_MODEL
 /* Load the destination list (needed to decode and encode with the model). Returns the number of names. */
 int d3_init_model(void);
-/* The decoded packet of the last LACF 3.0 frame d3_decide accepted with the model (for the log). */
-const char *d3_last_decoded(void);
 #endif
 
 #ifdef __cplusplus

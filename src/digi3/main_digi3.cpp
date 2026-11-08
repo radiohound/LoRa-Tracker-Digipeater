@@ -16,6 +16,7 @@
 #include <RadioLib.h>
 #include <IWatchdog.h>
 #include "digi3_core.h"
+#include "neighbors.h"
 #include "config_digi3.h"
 #include "hb3.h"
 #ifndef D3_WITH_MODEL
@@ -45,8 +46,10 @@ static void onRadioRx() { rxFlag = true; rxEndMs = millis(); }
 // ---- transmit queue ----
 struct TxSlot {
     bool     used;
-    uint8_t  tries;
-    uint32_t dueMs;      // earliest time to transmit
+    uint8_t  freeChecks; // channel found free this many times in a row
+    uint8_t  usedHops;   // hops used in the path when we heard it (cancel-on-hear)
+    uint32_t waitStartMs;// first channel check (0 = not yet)
+    uint32_t dueMs;      // earliest time to transmit or check the channel again
     uint32_t rxEndMs;    // end of the reception this repeats (for the RXT time to hop); 0 for our own beacon
     float    rssi, snr, fo;
     d3_job_t job;
@@ -59,8 +62,15 @@ static Seen seen[DEDUPE_SLOTS];
 static uint8_t seenNext = 0;
 
 // ---- counters ----
-static uint32_t nDecoded = 0, nConverted = 0;
+static uint32_t nDecoded = 0, nConverted = 0, nBusy = 0, nCancelled = 0, nSkipStationary = 0, nSkipOther = 0;
 static uint32_t nHeard = 0, nCrc = 0, nRelayPlain = 0, nRelayLacf3 = 0, nDup = 0, nBusyDrop = 0, nQueueFull = 0, nBeacons = 0;
+
+// ---- stations heard ----
+static d3_station_t   stationSlots[NEIGHBOR_SLOTS];
+static d3_neighbors_t neighbors;
+static const d3_moving_cfg_t movingCfg = { MOVE_THRESHOLD_M, STATIONARY_REPEAT_MIN, MOVING_REPEAT_MESSAGES, MOVING_REPEAT_OTHER,
+                                           MOVING_REPEAT_UNREADABLE, ALWAYS_REPEAT_TOCALLS };
+static const uint32_t CAD_SLOT_MS = (uint32_t)(4.0 * (1 << LORA_SF) / LORA_BW + 0.5);   // one channel check: about 4 symbols
 static uint32_t nWhy[D3_REASONS];
 
 static uint32_t nextBeaconMs = 0, nextStatsMs = 0;
@@ -134,25 +144,48 @@ static void handleRx()
     if (st == RADIOLIB_ERR_CRC_MISMATCH) { nCrc++; return; }
     if (st != RADIOLIB_ERR_NONE || n < 4) return;
     nHeard++;
+    uint32_t now = millis();
+
+#if CANCEL_ON_HEAR
+    {   // another digipeater repeated a packet we are still waiting to repeat: drop ours
+        uint32_t key; int usedNow;
+        if (d3_identify(fr, n, &key, &usedNow))
+            for (int i = 0; i < DIGI_QUEUE_SIZE; i++)
+                if (txq[i].used && txq[i].rxEndMs && txq[i].job.key == key && usedNow > txq[i].usedHops) {
+                    txq[i].used = false; nCancelled++;
+                    LOG(F("[Digi] cancelled, already repeated by another digi: ")); LOGLN(txq[i].job.text);
+                }
+    }
+#endif
 
     TxSlot *slot = freeSlot();
     static d3_job_t scratch;                    // decided here first, so a full queue still counts the reason
     d3_job_t *job = slot ? &slot->job : &scratch;
     int r = callsignSet ? d3_decide(fr, n, myCall, DIGI_MODE, job) : D3_NOT_SERVED;
+    const char *text = d3_last_text();          // the packet as received, if this digi could read it
+    if (text[0]) d3_observe(&neighbors, text, strlen(text), rssi, snr, now);
     LOG(F("[RX] ")); LOG(n); LOG(F(" B ")); LOG(rssi, 0); LOG(F(" dBm ")); LOG(snr, 1); LOG(F(" dB ")); LOG((long)fo); LOG(F(" Hz: "));
-    if (r != D3_OK) { nWhy[r]++; LOGLN(d3_reason(r)); return; }
-    if (job->decoded) {
-        nDecoded++;
 #if LOG_DECODED
-        LOG(F("decoded ")); LOGLN(d3_last_decoded()); LOG(F("      "));
+    if (text[0] && n > 2 && fr[2] == 0x03) { LOG(F("decoded ")); LOGLN(text); LOG(F("      ")); }
 #endif
-    }
+    if (r != D3_OK) { nWhy[r]++; LOGLN(d3_reason(r)); return; }
+    if (job->decoded) nDecoded++;
     job->convert = (job->fmt == D3_FMT_PLAIN && TX_FORMAT_LACF3) ? 1 : 0;
-    uint32_t now = millis();
     if (seenRecently(job->key, now)) { nDup++; LOGLN(F("duplicate")); return; }
     remember(job->key, now);
+#if DIGI_ONLY_MOVING
+    {
+        int md = d3_moving_decision(&neighbors, &movingCfg, text[0] ? text : nullptr, strlen(text), job->named, now);
+        if (!d3_move_repeats(md)) {
+            if (md == D3_MOVE_SKIP_STATIONARY) nSkipStationary++; else nSkipOther++;
+            LOGLN(d3_move_reason(md));
+            return;
+        }
+        LOG(d3_move_reason(md)); LOG(F(": "));
+    }
+#endif
     if (!slot) { nQueueFull++; LOGLN(F("queue full")); return; }
-    slot->used = true; slot->tries = 0;
+    slot->used = true; slot->freeChecks = 0; slot->waitStartMs = 0; slot->usedHops = job->used_hops;
     slot->dueMs = now + randomBetween(DIGI_DELAY_MIN_MS, DIGI_DELAY_MAX_MS);
     slot->rxEndMs = endMs ? endMs : now;
     slot->rssi = rssi; slot->snr = snr; slot->fo = fo;
@@ -168,14 +201,24 @@ static void transmitDue()
     for (int i = 0; i < DIGI_QUEUE_SIZE; i++) {
         TxSlot &s = txq[i];
         if (!s.used || (int32_t)(now - s.dueMs) < 0) continue;
+        if (rxFlag) return;                     // a packet waiting to be read: the channel is busy, and it may cancel this repeat
 
-        int16_t cad = radio.scanChannel();      // listen before talking: LoRa channel activity detection
-        if (cad == RADIOLIB_LORA_DETECTED) {
-            if (++s.tries > DIGI_BUSY_TRIES) { s.used = false; nBusyDrop++; LOGLN(F("[TX] channel busy, dropped")); }
-            else s.dueMs = millis() + randomBetween(DIGI_BUSY_MIN_MS, DIGI_BUSY_MAX_MS);
-            startRx();
+        // Listen before talk: CAD_DIFS_SLOTS free checks in a row; a busy check backs off 1 to CAD_BACKOFF_MAX slots.
+        if (!s.waitStartMs) s.waitStartMs = now ? now : 1;
+        if (now - s.waitStartMs > CAD_MAX_WAIT_S * 1000UL) {
+            s.used = false; nBusyDrop++;
+            LOGLN(F("[TX] channel busy too long, given up"));
+            if (s.rxEndMs == 0) nextBeaconMs = now + 30000UL;      // our beacon: try again in 30 s
             return;
         }
+        int16_t cad = radio.scanChannel();
+        startRx();                              // keep receiving between checks
+        if (cad != RADIOLIB_CHANNEL_FREE) {
+            nBusy++; s.freeChecks = 0;
+            s.dueMs = millis() + CAD_SLOT_MS * randomBetween(1, CAD_BACKOFF_MAX);
+            return;
+        }
+        if (++s.freeChecks < CAD_DIFS_SLOTS) { s.dueMs = millis(); return; }
 
         uint8_t out[D3_MAX_FRAME]; size_t len;
         if (s.job.fmt == D3_FMT_LACF3) {
@@ -229,7 +272,7 @@ static void queueBeacon()
                      sizeof(BEACON_PATH) > 1 ? "," : "", BEACON_PATH, pos, BEACON_COMMENT);
     if (w <= 0 || w >= (int)sizeof slot->job.text) return;
     slot->job.fmt = D3_FMT_PLAIN; slot->job.text_len = (uint16_t)w; slot->job.rx_len = 0; slot->job.decoded = 0; slot->job.convert = TX_FORMAT_LACF3;
-    slot->used = true; slot->tries = 0; slot->dueMs = millis(); slot->rxEndMs = 0;
+    slot->used = true; slot->freeChecks = 0; slot->waitStartMs = 0; slot->usedHops = 0; slot->dueMs = millis(); slot->rxEndMs = 0;
     LOG(F("[Beacon] ")); LOGLN(slot->job.text);
 }
 
@@ -240,7 +283,20 @@ static void printStats()
     LOG(F(", duplicates ")); LOG(nDup); LOG(F(", LACF2 skipped ")); LOG(nWhy[D3_LACF2]);
     LOG(F(", damaged ")); LOG(nWhy[D3_BAD_FRAME]); LOG(F(", busy drops ")); LOG(nBusyDrop);
     LOG(F(", queue full ")); LOG(nQueueFull); LOG(F(", beacons ")); LOG(nBeacons);
-    LOG(F(", LACF3 decoded ")); LOG(nDecoded); LOG(F(", sent as LACF3 ")); LOGLN(nConverted);
+    LOG(F(", LACF3 decoded ")); LOG(nDecoded); LOG(F(", sent as LACF3 ")); LOG(nConverted);
+    LOG(F(", channel busy ")); LOG(nBusy); LOG(F(", cancelled ")); LOG(nCancelled);
+    LOG(F(", fixed stations skipped ")); LOG(nSkipStationary); LOG(F(", other skipped ")); LOGLN(nSkipOther);
+    // The station list: heard on the air by this digi (signal), and where each station last reported itself.
+    uint32_t now = millis();
+    for (int i = 0; i < neighbors.n; i++) {
+        const d3_station_t &st = neighbors.s[i];
+        if (!st.call[0]) continue;
+        LOG(F("  ")); LOG(st.call);
+        if (st.rf_ms) { LOG(F("  heard ")); LOG((now - st.rf_ms) / 60000UL); LOG(F(" min ago ")); LOG(st.rssi10 / 10); LOG(F(" dBm ")); LOG(st.snr10 / 10.0f, 1); LOG(F(" dB")); LOG(st.direct_src ? F(" direct") : F("")); }
+        if (st.has_pos) { LOG(F("  at ")); LOG(st.lat / 1e6, 5); LOG(F(",")); LOG(st.lon / 1e6, 5); LOG(F(" ")); LOG((now - st.pos_ms) / 60000UL); LOG(F(" min ago")); }
+        if (st.has_rep) { LOG(F("  last repeated ")); LOG((now - st.rep_ms) / 60000UL); LOG(F(" min ago")); }
+        LOGLN();
+    }
 }
 
 // ============================================================
@@ -261,6 +317,7 @@ void setup()
     if (!callsignSet) LOGLN(F("[Boot] set MY_CALLSIGN in config_digi3.h: not relaying or beaconing until then"));
 
     memset(txq, 0, sizeof txq);
+    d3_neighbors_init(&neighbors, stationSlots, NEIGHBOR_SLOTS);
     memset(seen, 0, sizeof seen);
     LOG(F("[Boot] LACF destination list: ")); LOG(d3_init_model()); LOGLN(F(" names"));
     radioInit();

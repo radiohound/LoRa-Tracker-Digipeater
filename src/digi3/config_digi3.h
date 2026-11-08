@@ -16,10 +16,37 @@
 #define DIGI_MODE           D3_MODE_WIDE
 #define DIGI_DELAY_MIN_MS   100             // random wait before repeating, so two digis rarely key at once
 #define DIGI_DELAY_MAX_MS   500
-#define DIGI_BUSY_TRIES     6               // channel busy (CAD): wait and look again this many times, then drop
-#define DIGI_BUSY_MIN_MS    500
-#define DIGI_BUSY_MAX_MS    2000
 #define DIGI_QUEUE_SIZE     4
+
+// ---- LISTEN BEFORE TALK (as the LoRa APRS Pi and the iGate firmware) ----
+// Before every transmission the channel must be found free CAD_DIFS_SLOTS times in a row (one slot = one channel
+// activity check, about 4 symbols: 131 ms at SF12). A busy channel means a random wait of 1 to CAD_BACKOFF_MAX slots,
+// still receiving. After CAD_MAX_WAIT_S without a free channel a repeat is given up (a beacon is tried again in 30 s).
+#define CAD_DIFS_SLOTS      2
+#define CAD_BACKOFF_MAX     4
+#define CAD_MAX_WAIT_S      10
+
+// ---- CANCEL ON HEAR ----
+// A repeat still waiting (for its delay or a free channel) is dropped when the same packet is heard repeated by
+// another digipeater first (more used hops in its path than when this digi heard it).
+#define CANCEL_ON_HEAR      1
+
+// ---- MOVING STATIONS ONLY ----
+// 1: repeat only what moves, plus whatever asks for this digi by name. Every packet heard updates a list of
+// stations (position, when last heard, signal), printed with the counters on the serial port.
+//   Always repeated: a path that names this digi (e.g. a tracker set to path K6ATV-10), and destinations (tocalls)
+//   that start with a prefix in ALWAYS_REPEAT_TOCALLS.
+//   Repeated: a station's first position, and any position MOVE_THRESHOLD_M or more from the last one repeated.
+//   Not repeated: a fixed station heard again in the same place (unless STATIONARY_REPEAT_MIN is set).
+// 0: an ordinary digipeater (the path rule alone decides). The station list is kept either way.
+#define DIGI_ONLY_MOVING          0
+#define MOVE_THRESHOLD_M          100
+#define STATIONARY_REPEAT_MIN     0         // also repeat a fixed station's position after this many minutes (0 = never)
+#define MOVING_REPEAT_MESSAGES    1         // messages and acks (they have no position)
+#define MOVING_REPEAT_OTHER       0         // status, telemetry and other packets without a position
+#define MOVING_REPEAT_UNREADABLE  1         // LACF frames with a model this build does not hold
+#define ALWAYS_REPEAT_TOCALLS     ""        // e.g. "APLAIX,APLAB" (prefixes, comma-separated)
+#define NEIGHBOR_SLOTS            48        // stations remembered (about 60 bytes each)
 #define DEDUPE_SECONDS      30              // the same packet heard again within this time is not repeated again
 #define DEDUPE_SLOTS        32
 
