@@ -4,3 +4,8 @@
 .vscode/launch.json
 .vscode/ipch
 test/host/test_digi3
+
+# host test builds
+test/host/test_digi3
+test/host/test_settings
+test/host/*.dSYM/

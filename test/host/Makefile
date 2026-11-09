@@ -13,6 +13,15 @@ test_digi3: $(SRC) ../../src/digi3/digi3_core.h ../../src/digi3/neighbors.h ../.
 	$(CC) $(CFLAGS) $(DEFS) -I../../src/digi3 -I../../lib/lacf3 -o $@ $(SRC) -lm
 
 clean:
-	rm -f test_digi3
+	rm -f test_digi3 test_settings
 
 .PHONY: test clean
+
+# the settings core alone (no codec needed)
+test-settings: test_settings
+	./test_settings
+
+test_settings: test_settings.c ../../src/digi3/settings.c ../../src/digi3/settings.h ../../src/digi3/config_digi3.h
+	$(CC) $(CFLAGS) -I../../src/digi3 -o $@ test_settings.c ../../src/digi3/settings.c
+
+.PHONY: test-settings

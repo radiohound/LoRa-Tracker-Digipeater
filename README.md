@@ -512,6 +512,39 @@ as **`e77_lacf3_digi_full`** (`-D D3_WITH_MODEL -D HB_FAST`).
   packets, plain or LACF 3.0 (decoded with the model). Movement is measured from the last position repeated,
   so a station creeping a few metres per beacon is still repeated once it has gone 100 m.
 
+#### Settings over the serial port (no reflash)
+
+Everything in `config_digi3.h` is now only a **default**. Connect a USB-serial adapter to the E77's UART
+(115200 baud, the same port as the log) and type commands; settings are checked when typed and kept in the
+chip's last flash page with `save`, so they survive a power-off. A blank chip starts with the defaults.
+
+```
+help                      every command and every setting with its range
+show                      all settings        get sf        one setting
+set call K6ATV-2          callsign and SSID in one go (set ssid 2 alone also works)
+set mode wide             fillin or wide      set moving on        set freq 439.9125
+set comment LACF 3 digi   text settings take the rest of the line; - means empty
+apply                     use changed radio settings (freq, bw, sf, cr, power, sync, preamble, boosted)
+save                      write to flash      defaults      load the compiled-in values (then apply, save)
+stats                     counters and station list now      beacon      send the beacon now
+reboot                    restart (refused with unsaved changes unless: reboot force)
+```
+
+* Everything except the radio settings takes effect at once. Radio settings need `apply`; if the radio
+  refuses them, the previous ones stay in use. `save` is refused while radio settings are typed but not applied,
+  so a value the chip rejects is never saved. If a saved radio setting is ever refused at start-up, the
+  digipeater falls back to the compiled-in radio values instead of hanging.
+* A fresh unit has the callsign `N0CALL` and relays and beacons nothing until you `set call`.
+* `set log off` silences the per-packet log (command replies and `stats` still print); `DEBUG_SERIAL 0`
+  removes the log from the program altogether (about 5 KB).
+* The record is a list of numbered entries with a CRC, written to the last 2 KB flash page. `platformio.ini`
+  lowers the linker's flash size by that page (`board_upload.maximum_size = 260096`), so the program cannot
+  grow into it. A newer firmware reads an older record (new settings take their defaults); an entry whose
+  value is out of range is skipped. Flash is erased only when the record changes (about 10,000 erase cycles).
+* Not settable (they depend on the board): TCXO voltage, RF switch pins, current limit, queue and table sizes.
+* `src/digi3/settings.c` has the table of settings; ids are positions in it, so only ever append.
+  Test: `make -C test/host test-settings`.
+
 Size, built 8 November 2026 with the same tools:
 
 | | Without the tables (`lacf3-digi`) | With the tables (`lacf3-digi-full`) | ... and moving stations only on |
@@ -520,6 +553,11 @@ Size, built 8 November 2026 with the same tools:
 | of which PPM tables and coder | | 156 KB | 156 KB |
 | RAM, fixed | 8 KB | 12 KB (with the 48-station list) | 12 KB |
 | Deepest stack (decode a frame) | about 6.5 KB | about 8 KB | about 8 KB |
+
+With the serial settings (8 November 2026): **245,524 of 260,096 bytes** (the last flash page is reserved for the
+record), about 14 KB free; RAM 11 KB. The whole feature added 11.5 KB over the 234,052 bytes before it (the settings
+table and parser, the flash record, the commands, and the moving-stations code, which is switchable at run
+time now and so no longer dropped by the linker).
 
 The `lacf3-digi` branch (no tables) does not have the listen-before-talk timing, cancel on hear, the station
 list or moving stations only yet.

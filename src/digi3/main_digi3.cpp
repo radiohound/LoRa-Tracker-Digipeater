@@ -9,7 +9,8 @@
 // LACF 2.0 frames are not repeated.
 //
 // Radio set-up as in PicoTrack and LoRa-Tracker-Digipeater (K6ATV): RF switch on PA6/PA7/PB3, TCXO 1.7 V.
-// Settings: src/digi3/config_digi3.h.  Core logic (tested on a PC): src/digi3/digi3_core.c.
+// Settings: typed over the serial port (help, show, set, save), kept in the last flash page; src/digi3/config_digi3.h holds the defaults.
+// Core logic (tested on a PC): src/digi3/digi3_core.c, settings.c.
 // ============================================================
 
 #include <Arduino.h>
@@ -18,23 +19,31 @@
 #include "digi3_core.h"
 #include "neighbors.h"
 #include "config_digi3.h"
+#include "settings.h"
 #include "hb3.h"
 #ifndef D3_WITH_MODEL
 #error "this branch needs the PPM tables: build the e77_lacf3_digi_full environment (it defines D3_WITH_MODEL)"
 #endif
 
+// LOG: events (every packet heard, every transmission). Compiled out when DEBUG_SERIAL is 0, and silenced at run time by "set log off".
+// OUT: always printed (command replies, boot messages, the counters on request).
 #if DEBUG_SERIAL
-  #define LOG(...)   Serial.print(__VA_ARGS__)
-  #define LOGLN(...) Serial.println(__VA_ARGS__)
+  #define LOG(...)   do { if (cfg.log) Serial.print(__VA_ARGS__); } while (0)
+  #define LOGLN(...) do { if (cfg.log) Serial.println(__VA_ARGS__); } while (0)
 #else
   #define LOG(...)
   #define LOGLN(...)
 #endif
+#define OUT(...)   Serial.print(__VA_ARGS__)
+#define OUTLN(...) Serial.println(__VA_ARGS__)
 
 STM32WLx radio = new STM32WLx_Module();
 static const uint32_t               rfswitch_pins[]  = RFSWITCH_PINS;
 static const Module::RfSwitchMode_t rfswitch_table[] = { RFSWITCH_TABLE };
 
+static d3_settings_t cfg;            // the settings in use (defaults, then the saved record, then whatever was typed)
+static d3_settings_t radioApplied;   // the radio settings the chip is really using
+static bool          dirty = false;  // typed but not saved
 static char myCall[16];
 static bool callsignSet = false;
 
@@ -68,18 +77,30 @@ static uint32_t nHeard = 0, nCrc = 0, nRelayPlain = 0, nRelayLacf3 = 0, nDup = 0
 // ---- stations heard ----
 static d3_station_t   stationSlots[NEIGHBOR_SLOTS];
 static d3_neighbors_t neighbors;
-static const d3_moving_cfg_t movingCfg = { MOVE_THRESHOLD_M, STATIONARY_REPEAT_MIN, MOVING_REPEAT_MESSAGES, MOVING_REPEAT_OTHER,
-                                           MOVING_REPEAT_UNREADABLE, ALWAYS_REPEAT_TOCALLS };
-static const uint32_t CAD_SLOT_MS = (uint32_t)(4.0 * (1 << LORA_SF) / LORA_BW + 0.5);   // one channel check: about 4 symbols
+static d3_moving_cfg_t movingCfg;
+static uint32_t cadSlotMs;           // one channel check: about 4 symbols
 static uint32_t nWhy[D3_REASONS];
 
 static uint32_t nextBeaconMs = 0, nextStatsMs = 0;
 
 // ============================================================
+// Everything derived from the settings; run after any change.
+static void applySettings()
+{
+    d3s_fullcall(&cfg, myCall, sizeof myCall);
+    callsignSet = strcmp(cfg.call, "N0CALL") != 0;
+    movingCfg.move_threshold_m = cfg.move_m; movingCfg.stationary_repeat_min = cfg.stationary_min;
+    movingCfg.repeat_messages = cfg.mv_messages; movingCfg.repeat_other = cfg.mv_other; movingCfg.repeat_unreadable = cfg.mv_unreadable;
+    movingCfg.always_tocalls = cfg.always_tocalls;
+    cadSlotMs = (4000UL * (1UL << cfg.sf) + cfg.bw_hz / 2) / cfg.bw_hz;
+}
+
+static float mhz(uint32_t hz) { return (float)(hz / 1000000u) + (float)(hz % 1000000u) / 1e6f; }
+
 static bool seenRecently(uint32_t key, uint32_t now)
 {
     for (int i = 0; i < DEDUPE_SLOTS; i++)
-        if (seen[i].ms && seen[i].key == key && now - seen[i].ms < DEDUPE_SECONDS * 1000UL) return true;
+        if (seen[i].ms && seen[i].key == key && now - seen[i].ms < cfg.dedupe_s * 1000UL) return true;
     return false;
 }
 
@@ -101,25 +122,45 @@ static uint32_t randomBetween(uint32_t lo, uint32_t hi) { return lo + (uint32_t)
 // ============================================================
 // RADIO
 // ============================================================
-static void radioInit()
+// The radio settings that can change while running (frequency, bandwidth, SF, CR, power, sync word, preamble, gain).
+static int16_t radioSetParams(const d3_settings_t &c)
+{
+    int16_t st = radio.setFrequency(mhz(c.freq_hz));
+    if (st == RADIOLIB_ERR_NONE) st = radio.setBandwidth(c.bw_hz / 1000.0f);
+    if (st == RADIOLIB_ERR_NONE) st = radio.setSpreadingFactor(c.sf);
+    if (st == RADIOLIB_ERR_NONE) st = radio.setCodingRate(c.cr);
+    if (st == RADIOLIB_ERR_NONE) st = radio.setOutputPower(c.power_dbm);
+    if (st == RADIOLIB_ERR_NONE) st = radio.setSyncWord(c.sync);
+    if (st == RADIOLIB_ERR_NONE) st = radio.setPreambleLength(c.preamble);
+    if (st == RADIOLIB_ERR_NONE) st = radio.setRxBoostedGainMode(c.boosted ? true : false);
+    return st;
+}
+
+static bool radioDiffers()
+{
+    return cfg.freq_hz != radioApplied.freq_hz || cfg.bw_hz != radioApplied.bw_hz || cfg.sf != radioApplied.sf || cfg.cr != radioApplied.cr ||
+           cfg.power_dbm != radioApplied.power_dbm || cfg.sync != radioApplied.sync || cfg.preamble != radioApplied.preamble ||
+           cfg.boosted != radioApplied.boosted;
+}
+
+// Start the radio from cfg. Returns the RadioLib status; does not reset (the caller decides what to do about a failure).
+static int16_t radioInit()
 {
     radio.setRfSwitchTable(rfswitch_pins, rfswitch_table);
     LOG(F("[Radio] init... "));
-    int16_t st = radio.begin(LORA_FREQ, LORA_BW, LORA_SF, LORA_CR);
+    int16_t st = radio.begin(mhz(cfg.freq_hz), cfg.bw_hz / 1000.0f, cfg.sf, cfg.cr);
     if (st == RADIOLIB_ERR_NONE) st = radio.setTCXO(TCXO_VOLTAGE);
-    if (st == RADIOLIB_ERR_NONE) st = radio.setOutputPower(LORA_TX_POWER);
     if (st == RADIOLIB_ERR_NONE) st = radio.setCurrentLimit(LORA_OCP_MA);
-    if (st == RADIOLIB_ERR_NONE) st = radio.setSyncWord(LORA_SYNC_WORD);
-    if (st == RADIOLIB_ERR_NONE) st = radio.setPreambleLength(LORA_PREAMBLE);
+    if (st == RADIOLIB_ERR_NONE) st = radioSetParams(cfg);
     if (st == RADIOLIB_ERR_NONE) st = radio.setCRC(true);
-    if (st == RADIOLIB_ERR_NONE) st = radio.setRxBoostedGainMode(RX_BOOSTED_GAIN ? true : false);
-    if (st != RADIOLIB_ERR_NONE) {
-        LOG(F("failed, code ")); LOGLN(st);
-        delay(2000);
-        NVIC_SystemReset();                     // a remote site: try again from the start instead of hanging
+    if (st == RADIOLIB_ERR_NONE) {
+        radio.setPacketReceivedAction(onRadioRx);
+        radioApplied = cfg;
+        LOGLN(F("OK"));
+    } else {
+        OUT(F("[Radio] init failed, code ")); OUTLN(st);
     }
-    radio.setPacketReceivedAction(onRadioRx);
-    LOGLN(F("OK"));
+    return st;
 }
 
 static void startRx()
@@ -146,8 +187,7 @@ static void handleRx()
     nHeard++;
     uint32_t now = millis();
 
-#if CANCEL_ON_HEAR
-    {   // another digipeater repeated a packet we are still waiting to repeat: drop ours
+    if (cfg.cancel_on_hear) {   // another digipeater repeated a packet we are still waiting to repeat: drop ours
         uint32_t key; int usedNow;
         if (d3_identify(fr, n, &key, &usedNow))
             for (int i = 0; i < DIGI_QUEUE_SIZE; i++)
@@ -156,25 +196,21 @@ static void handleRx()
                     LOG(F("[Digi] cancelled, already repeated by another digi: ")); LOGLN(txq[i].job.text);
                 }
     }
-#endif
 
     TxSlot *slot = freeSlot();
     static d3_job_t scratch;                    // decided here first, so a full queue still counts the reason
     d3_job_t *job = slot ? &slot->job : &scratch;
-    int r = callsignSet ? d3_decide(fr, n, myCall, DIGI_MODE, job) : D3_NOT_SERVED;
+    int r = callsignSet ? d3_decide(fr, n, myCall, cfg.mode, job) : D3_NOT_SERVED;
     const char *text = d3_last_text();          // the packet as received, if this digi could read it
     if (text[0]) d3_observe(&neighbors, text, strlen(text), rssi, snr, now);
     LOG(F("[RX] ")); LOG(n); LOG(F(" B ")); LOG(rssi, 0); LOG(F(" dBm ")); LOG(snr, 1); LOG(F(" dB ")); LOG((long)fo); LOG(F(" Hz: "));
-#if LOG_DECODED
-    if (text[0] && n > 2 && fr[2] == 0x03) { LOG(F("decoded ")); LOGLN(text); LOG(F("      ")); }
-#endif
+    if (cfg.log_decoded && text[0] && n > 2 && fr[2] == 0x03) { LOG(F("decoded ")); LOGLN(text); LOG(F("      ")); }
     if (r != D3_OK) { nWhy[r]++; LOGLN(d3_reason(r)); return; }
     if (job->decoded) nDecoded++;
-    job->convert = (job->fmt == D3_FMT_PLAIN && TX_FORMAT_LACF3) ? 1 : 0;
+    job->convert = (job->fmt == D3_FMT_PLAIN && cfg.tx_lacf3) ? 1 : 0;
     if (seenRecently(job->key, now)) { nDup++; LOGLN(F("duplicate")); return; }
     remember(job->key, now);
-#if DIGI_ONLY_MOVING
-    {
+    if (cfg.moving) {
         int md = d3_moving_decision(&neighbors, &movingCfg, text[0] ? text : nullptr, strlen(text), job->named, now);
         if (!d3_move_repeats(md)) {
             if (md == D3_MOVE_SKIP_STATIONARY) nSkipStationary++; else nSkipOther++;
@@ -183,10 +219,9 @@ static void handleRx()
         }
         LOG(d3_move_reason(md)); LOG(F(": "));
     }
-#endif
     if (!slot) { nQueueFull++; LOGLN(F("queue full")); return; }
     slot->used = true; slot->freeChecks = 0; slot->waitStartMs = 0; slot->usedHops = job->used_hops;
-    slot->dueMs = now + randomBetween(DIGI_DELAY_MIN_MS, DIGI_DELAY_MAX_MS);
+    slot->dueMs = now + randomBetween(cfg.delay_min_ms, cfg.delay_max_ms);
     slot->rxEndMs = endMs ? endMs : now;
     slot->rssi = rssi; slot->snr = snr; slot->fo = fo;
     LOG(job->fmt == D3_FMT_LACF3 ? (job->decoded ? F("LACF3 relay ") : F("LACF3 relay without the model ")) : (job->convert ? F("plain, sent as LACF3 ") : F("plain repeat "))); LOGLN(job->text);
@@ -205,7 +240,7 @@ static void transmitDue()
 
         // Listen before talk: CAD_DIFS_SLOTS free checks in a row; a busy check backs off 1 to CAD_BACKOFF_MAX slots.
         if (!s.waitStartMs) s.waitStartMs = now ? now : 1;
-        if (now - s.waitStartMs > CAD_MAX_WAIT_S * 1000UL) {
+        if (now - s.waitStartMs > cfg.cad_wait_s * 1000UL) {
             s.used = false; nBusyDrop++;
             LOGLN(F("[TX] channel busy too long, given up"));
             if (s.rxEndMs == 0) nextBeaconMs = now + 30000UL;      // our beacon: try again in 30 s
@@ -215,10 +250,10 @@ static void transmitDue()
         startRx();                              // keep receiving between checks
         if (cad != RADIOLIB_CHANNEL_FREE) {
             nBusy++; s.freeChecks = 0;
-            s.dueMs = millis() + CAD_SLOT_MS * randomBetween(1, CAD_BACKOFF_MAX);
+            s.dueMs = millis() + cadSlotMs * randomBetween(1, cfg.cad_backoff);
             return;
         }
-        if (++s.freeChecks < CAD_DIFS_SLOTS) { s.dueMs = millis(); return; }
+        if (++s.freeChecks < cfg.cad_difs) { s.dueMs = millis(); return; }
 
         uint8_t out[D3_MAX_FRAME]; size_t len;
         if (s.job.fmt == D3_FMT_LACF3) {
@@ -226,7 +261,7 @@ static void transmitDue()
             uint8_t tup[4] = { 0, 0, 0, 0 };
             len = d3_build(&s.job, myCall, tup, out, sizeof out);
             float toaMs = len ? radio.getTimeOnAir(len) / 1000.0f : 0;
-            d3_rxt_tuple(s.rssi, s.snr, s.fo, (float)(millis() - s.rxEndMs) + toaMs, LORA_SF, LORA_BW, tup);
+            d3_rxt_tuple(s.rssi, s.snr, s.fo, (float)(millis() - s.rxEndMs) + toaMs, cfg.sf, cfg.bw_hz / 1000.0f, tup);
             len = d3_build(&s.job, myCall, tup, out, sizeof out);
         } else {
             len = d3_build(&s.job, myCall, nullptr, out, sizeof out);
@@ -254,12 +289,13 @@ static void transmitDue()
 // ============================================================
 // BEACON: fixed position, plain text
 // ============================================================
-static void latlon(char *out, size_t cap, double lat, double lon)
+static void latlon(char *out, size_t cap, int32_t lat_u, int32_t lon_u)
 {
-    long a = lround(fabs(lat) * 6000.0), o = lround(fabs(lon) * 6000.0);     // hundredths of a minute
-    snprintf(out, cap, "%02ld%02ld.%02ld%c%c%03ld%02ld.%02ld%c%c",
-             a / 6000, (a % 6000) / 100, a % 100, lat >= 0 ? 'N' : 'S', BEACON_SYMBOL_TABLE,
-             o / 6000, (o % 6000) / 100, o % 100, lon >= 0 ? 'E' : 'W', BEACON_SYMBOL_CODE);
+    uint32_t a = ((uint32_t)(lat_u < 0 ? -lat_u : lat_u) * 6u + 500u) / 1000u;       // hundredths of a minute
+    uint32_t o = ((uint32_t)(lon_u < 0 ? -lon_u : lon_u) * 6u + 500u) / 1000u;
+    snprintf(out, cap, "%02lu%02lu.%02lu%c%c%03lu%02lu.%02lu%c%c",
+             (unsigned long)(a / 6000), (unsigned long)((a % 6000) / 100), (unsigned long)(a % 100), lat_u >= 0 ? 'N' : 'S', cfg.sym_table[0],
+             (unsigned long)(o / 6000), (unsigned long)((o % 6000) / 100), (unsigned long)(o % 100), lon_u >= 0 ? 'E' : 'W', cfg.sym_code[0]);
 }
 
 static void queueBeacon()
@@ -267,80 +303,216 @@ static void queueBeacon()
     TxSlot *slot = freeSlot();
     if (!slot) return;
     char pos[32];
-    latlon(pos, sizeof pos, BEACON_LAT, BEACON_LON);
-    int w = snprintf(slot->job.text, sizeof slot->job.text, "%s>%s%s%s:!%s%s", myCall, APRS_DESTINATION,
-                     sizeof(BEACON_PATH) > 1 ? "," : "", BEACON_PATH, pos, BEACON_COMMENT);
+    latlon(pos, sizeof pos, cfg.lat_u, cfg.lon_u);
+    int w = snprintf(slot->job.text, sizeof slot->job.text, "%s>%s%s%s:!%s%s", myCall, cfg.tocall,
+                     cfg.path[0] ? "," : "", cfg.path, pos, cfg.comment);
     if (w <= 0 || w >= (int)sizeof slot->job.text) return;
-    slot->job.fmt = D3_FMT_PLAIN; slot->job.text_len = (uint16_t)w; slot->job.rx_len = 0; slot->job.decoded = 0; slot->job.convert = TX_FORMAT_LACF3;
+    slot->job.fmt = D3_FMT_PLAIN; slot->job.text_len = (uint16_t)w; slot->job.rx_len = 0; slot->job.decoded = 0; slot->job.convert = cfg.tx_lacf3;
     slot->used = true; slot->freeChecks = 0; slot->waitStartMs = 0; slot->usedHops = 0; slot->dueMs = millis(); slot->rxEndMs = 0;
     LOG(F("[Beacon] ")); LOGLN(slot->job.text);
 }
 
 static void printStats()
 {
-    LOG(F("[Stats] heard ")); LOG(nHeard); LOG(F(", CRC errors ")); LOG(nCrc);
-    LOG(F(", repeated plain ")); LOG(nRelayPlain); LOG(F(", relayed LACF3 ")); LOG(nRelayLacf3);
-    LOG(F(", duplicates ")); LOG(nDup); LOG(F(", LACF2 skipped ")); LOG(nWhy[D3_LACF2]);
-    LOG(F(", damaged ")); LOG(nWhy[D3_BAD_FRAME]); LOG(F(", busy drops ")); LOG(nBusyDrop);
-    LOG(F(", queue full ")); LOG(nQueueFull); LOG(F(", beacons ")); LOG(nBeacons);
-    LOG(F(", LACF3 decoded ")); LOG(nDecoded); LOG(F(", sent as LACF3 ")); LOG(nConverted);
-    LOG(F(", channel busy ")); LOG(nBusy); LOG(F(", cancelled ")); LOG(nCancelled);
-    LOG(F(", fixed stations skipped ")); LOG(nSkipStationary); LOG(F(", other skipped ")); LOGLN(nSkipOther);
+    OUT(F("[Stats] heard ")); OUT(nHeard); OUT(F(", CRC errors ")); OUT(nCrc);
+    OUT(F(", repeated plain ")); OUT(nRelayPlain); OUT(F(", relayed LACF3 ")); OUT(nRelayLacf3);
+    OUT(F(", duplicates ")); OUT(nDup); OUT(F(", LACF2 skipped ")); OUT(nWhy[D3_LACF2]);
+    OUT(F(", damaged ")); OUT(nWhy[D3_BAD_FRAME]); OUT(F(", busy drops ")); OUT(nBusyDrop);
+    OUT(F(", queue full ")); OUT(nQueueFull); OUT(F(", beacons ")); OUT(nBeacons);
+    OUT(F(", LACF3 decoded ")); OUT(nDecoded); OUT(F(", sent as LACF3 ")); OUT(nConverted);
+    OUT(F(", channel busy ")); OUT(nBusy); OUT(F(", cancelled ")); OUT(nCancelled);
+    OUT(F(", fixed stations skipped ")); OUT(nSkipStationary); OUT(F(", other skipped ")); OUTLN(nSkipOther);
     // The station list: heard on the air by this digi (signal), and where each station last reported itself.
     uint32_t now = millis();
     for (int i = 0; i < neighbors.n; i++) {
         const d3_station_t &st = neighbors.s[i];
         if (!st.call[0]) continue;
-        LOG(F("  ")); LOG(st.call);
-        if (st.rf_ms) { LOG(F("  heard ")); LOG((now - st.rf_ms) / 60000UL); LOG(F(" min ago ")); LOG(st.rssi10 / 10); LOG(F(" dBm ")); LOG(st.snr10 / 10.0f, 1); LOG(F(" dB")); LOG(st.direct_src ? F(" direct") : F("")); }
-        if (st.has_pos) { LOG(F("  at ")); LOG(st.lat / 1e6, 5); LOG(F(",")); LOG(st.lon / 1e6, 5); LOG(F(" ")); LOG((now - st.pos_ms) / 60000UL); LOG(F(" min ago")); }
-        if (st.has_rep) { LOG(F("  last repeated ")); LOG((now - st.rep_ms) / 60000UL); LOG(F(" min ago")); }
-        LOGLN();
+        OUT(F("  ")); OUT(st.call);
+        if (st.rf_ms) { OUT(F("  heard ")); OUT((now - st.rf_ms) / 60000UL); OUT(F(" min ago ")); OUT(st.rssi10 / 10); OUT(F(" dBm ")); OUT(st.snr10 / 10.0f, 1); OUT(F(" dB")); OUT(st.direct_src ? F(" direct") : F("")); }
+        if (st.has_pos) { OUT(F("  at ")); OUT(st.lat / 1e6, 5); OUT(F(",")); OUT(st.lon / 1e6, 5); OUT(F(" ")); OUT((now - st.pos_ms) / 60000UL); OUT(F(" min ago")); }
+        if (st.has_rep) { OUT(F("  last repeated ")); OUT((now - st.rep_ms) / 60000UL); OUT(F(" min ago")); }
+        OUTLN();
+    }
+}
+
+// ============================================================
+// SETTINGS IN FLASH: the last 2 KB page of the chip. platformio.ini lowers the linker's flash size by one page so the program
+// can never grow into it. One record, with a CRC; an erased or damaged page just means "use the compiled-in defaults".
+// ============================================================
+#define FLASH_PAGE_BYTES 2048u
+
+static uint32_t settingsAddr()
+{
+    uint32_t kb = *(const uint16_t *)FLASHSIZE_BASE;
+    return kb == 256 ? FLASH_BASE + kb * 1024u - FLASH_PAGE_BYTES : 0;   // the linker reservation in platformio.ini assumes 256 KB
+}
+
+static void loadSettings()
+{
+    d3s_defaults(&cfg);
+    uint32_t addr = settingsAddr();
+    if (!addr) { OUTLN(F("[Settings] unexpected flash size: saving is off, using the compiled-in defaults")); return; }
+    int rej = 0;
+    int r = d3s_unpack((const uint8_t *)addr, D3S_REC_MAX, &cfg, &rej);
+    if (r == D3S_E_BLANK)       OUTLN(F("[Settings] none saved yet, using the compiled-in defaults"));
+    else if (r < 0)             OUTLN(F("[Settings] the saved record is damaged: using the compiled-in defaults"));
+    else { OUT(F("[Settings] loaded ")); OUT(r); OUT(F(" from flash")); if (rej) { OUT(F(", ")); OUT(rej); OUT(F(" refused (out of range)")); } OUTLN(); }
+}
+
+static void saveSettings()
+{
+    uint32_t addr = settingsAddr();
+    if (!addr) { OUTLN(F("error: this chip's flash size is not the 256 KB the settings page assumes")); return; }
+    if (radioDiffers()) { OUTLN(F("error: radio settings changed but not applied: type apply first, so a setting the radio refuses is never saved")); return; }
+    uint8_t rec[D3S_REC_MAX];
+    size_t n = d3s_pack(&cfg, rec, sizeof rec);
+    if (!n) { OUTLN(F("error: the record does not fit")); return; }
+    if (memcmp((const void *)addr, rec, n) == 0) { dirty = false; OUTLN(F("already saved, nothing written")); return; }
+
+    radio.standby();                            // no radio activity while the flash is erased and written
+    IWatchdog.reload();
+    HAL_FLASH_Unlock();
+    FLASH_EraseInitTypeDef er = {};
+    er.TypeErase = FLASH_TYPEERASE_PAGES;
+    er.Page      = (addr - FLASH_BASE) / FLASH_PAGE_BYTES;
+    er.NbPages   = 1;
+    uint32_t pageErr = 0;
+    bool ok = HAL_FLASHEx_Erase(&er, &pageErr) == HAL_OK;
+    for (size_t i = 0; ok && i < n; i += 8) {
+        uint64_t dw; memcpy(&dw, rec + i, 8);
+        ok = HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, addr + i, dw) == HAL_OK;
+    }
+    HAL_FLASH_Lock();
+    IWatchdog.reload();
+    startRx();
+    ok = ok && memcmp((const void *)addr, rec, n) == 0;          // read it back
+    if (ok) { dirty = false; OUT(F("saved ")); OUT((unsigned long)n); OUTLN(F(" bytes to flash")); }
+    else    { OUT(F("error: flash write failed, code ")); OUTLN((unsigned long)HAL_FLASH_GetError()); }
+}
+
+// ============================================================
+// SERIAL COMMANDS
+// ============================================================
+static void emitLine(void *, const char *l) { OUTLN(l); }
+
+static void applyRadio()
+{
+    radio.standby();
+    int16_t st = radioSetParams(cfg);
+    if (st == RADIOLIB_ERR_NONE) { radioApplied = cfg; OUTLN(F("ok: radio settings applied")); }
+    else {
+        OUT(F("error: the radio refused those settings (code ")); OUT(st); OUTLN(F("); going back to the ones in use"));
+        cfg.freq_hz = radioApplied.freq_hz; cfg.bw_hz = radioApplied.bw_hz; cfg.sf = radioApplied.sf; cfg.cr = radioApplied.cr;
+        cfg.power_dbm = radioApplied.power_dbm; cfg.sync = radioApplied.sync; cfg.preamble = radioApplied.preamble; cfg.boosted = radioApplied.boosted;
+        radioSetParams(cfg);
+    }
+    applySettings();
+    startRx();
+}
+
+static void handleCommand(const char *line)
+{
+    char before[16]; strcpy(before, myCall);
+    unsigned fl = d3s_exec(&cfg, line, emitLine, nullptr);
+    if (fl & D3S_CHANGED) {
+        applySettings();
+        if (strcmp(before, myCall) != 0) memset(txq, 0, sizeof txq);      // packets queued under the old callsign are dropped
+        if (!dirty) OUTLN(F("(not saved yet: type save to keep it after a power-off)"));
+        dirty = true;
+        if (!callsignSet) OUTLN(F("(callsign is still N0CALL: nothing is relayed or beaconed)"));
+    }
+    if (fl & D3S_APPLY)  applyRadio();
+    if (fl & D3S_SAVE)   saveSettings();
+    if (fl & D3S_STATS)  printStats();
+    if (fl & D3S_BEACON) {
+        if (!callsignSet) OUTLN(F("error: set a callsign first"));
+        else if (cfg.lat_u == 0 && cfg.lon_u == 0) OUTLN(F("error: no position set (set lat, set lon)"));
+        else { queueBeacon(); OUTLN(F("ok: beacon queued")); }
+    }
+    if (fl & D3S_REBOOT) {
+        if (dirty && !(fl & D3S_FORCE)) OUTLN(F("there are unsaved changes: type save first, or reboot force to drop them"));
+        else { OUTLN(F("restarting...")); Serial.flush(); delay(50); NVIC_SystemReset(); }
+    }
+}
+
+static char    lineBuf[D3S_LINE_MAX + 1];
+static uint8_t lineLen = 0;
+static bool    lineOver = false;
+
+static void serialPoll()
+{
+    while (Serial.available() > 0) {
+        int c = Serial.read();
+        if (c == '\r' || c == '\n') {
+            if (lineLen || lineOver) {
+                OUTLN();
+                lineBuf[lineLen] = 0;
+                if (lineOver) OUTLN(F("error: line too long")); else handleCommand(lineBuf);
+                lineLen = 0; lineOver = false;
+            }
+        } else if (c == 8 || c == 127) {
+            if (lineLen) { lineLen--; OUT(F("\b \b")); }
+        } else if (c >= 32 && c < 127) {
+            if (lineLen < D3S_LINE_MAX) { lineBuf[lineLen++] = (char)c; Serial.write((uint8_t)c); } else lineOver = true;
+        }
     }
 }
 
 // ============================================================
 void setup()
 {
-#if DEBUG_SERIAL
-    Serial.begin(DEBUG_BAUD);
+    Serial.begin(DEBUG_BAUD);                   // always on: the settings commands use it
     delay(300);
-#endif
-    LOGLN(F("=== LACF 3 digipeater with the tables (STM32WLE5), spec " HB3_SPEC_VERSION " ==="));
-    if (IWatchdog.isReset(true)) LOGLN(F("[Boot] restarted by the watchdog"));
+    OUTLN(F("=== LACF 3 digipeater with the tables (STM32WLE5), spec " HB3_SPEC_VERSION " ==="));
+    if (IWatchdog.isReset(true)) OUTLN(F("[Boot] restarted by the watchdog"));
     IWatchdog.begin((uint32_t)WATCHDOG_S * 1000000UL);
 
-    if (MY_SSID) snprintf(myCall, sizeof myCall, "%s-%d", MY_CALLSIGN, MY_SSID);
-    else snprintf(myCall, sizeof myCall, "%s", MY_CALLSIGN);
-    for (char *p = myCall; *p; p++) *p = (char)toupper((unsigned char)*p);
-    callsignSet = strncmp(myCall, "N0CALL", 6) != 0;
-    if (!callsignSet) LOGLN(F("[Boot] set MY_CALLSIGN in config_digi3.h: not relaying or beaconing until then"));
+    loadSettings();
+    applySettings();
+    OUT(F("[Boot] callsign ")); OUTLN(myCall);
+    if (!callsignSet) OUTLN(F("[Boot] callsign is N0CALL: nothing is relayed or beaconed. Type  set call YOURCALL-SSID  then  save  (help lists everything)"));
+    OUTLN();
+    d3s_menu(emitLine, nullptr);
+    OUTLN();
 
     memset(txq, 0, sizeof txq);
     d3_neighbors_init(&neighbors, stationSlots, NEIGHBOR_SLOTS);
     memset(seen, 0, sizeof seen);
-    LOG(F("[Boot] LACF destination list: ")); LOG(d3_init_model()); LOGLN(F(" names"));
-    radioInit();
+    OUT(F("[Boot] LACF destination list: ")); OUT(d3_init_model()); OUTLN(F(" names"));
+    if (radioInit() != RADIOLIB_ERR_NONE) {
+        // a saved radio setting the chip refuses must not leave a remote site dead: go back to the compiled-in radio values
+        d3_settings_t def; d3s_defaults(&def);
+        cfg.freq_hz = def.freq_hz; cfg.bw_hz = def.bw_hz; cfg.sf = def.sf; cfg.cr = def.cr; cfg.power_dbm = def.power_dbm;
+        cfg.sync = def.sync; cfg.preamble = def.preamble; cfg.boosted = def.boosted;
+        applySettings();
+        OUTLN(F("[Radio] trying the compiled-in radio settings"));
+        if (radioInit() != RADIOLIB_ERR_NONE) { delay(2000); NVIC_SystemReset(); }   // try again from the start instead of hanging
+        OUTLN(F("[Radio] running on the compiled-in radio settings; the saved ones were refused"));
+    }
     randomSeed(radio.random(0x7FFFFFFF));
     startRx();
 
-    nextBeaconMs = millis() + BEACON_FIRST_S * 1000UL;
-    nextStatsMs  = millis() + STATS_EVERY_MIN * 60000UL;
+    nextBeaconMs = millis() + cfg.beacon_first_s * 1000UL;
+    nextStatsMs  = millis() + (cfg.stats_min ? cfg.stats_min : 10) * 60000UL;
 }
 
 void loop()
 {
     IWatchdog.reload();
+    serialPoll();
     if (rxFlag) handleRx();
     transmitDue();
 
     uint32_t now = millis();
-    if (callsignSet && (BEACON_LAT != 0.0 || BEACON_LON != 0.0) && (int32_t)(now - nextBeaconMs) >= 0) {
+    if (callsignSet && (cfg.lat_u != 0 || cfg.lon_u != 0) && (int32_t)(now - nextBeaconMs) >= 0) {
         queueBeacon();
-        nextBeaconMs = now + BEACON_INTERVAL_MIN * 60000UL;
+        nextBeaconMs = now + cfg.beacon_min * 60000UL;
     }
-    if ((int32_t)(now - nextStatsMs) >= 0) { printStats(); nextStatsMs = now + STATS_EVERY_MIN * 60000UL; }
+    if ((int32_t)(now - nextStatsMs) >= 0) {
+        if (cfg.stats_min && cfg.log) printStats();
+        nextStatsMs = now + (cfg.stats_min ? cfg.stats_min : 10) * 60000UL;
+    }
 
-    // Sleep until the next interrupt (the radio, or the 1 ms system tick). The radio keeps listening.
+    // Sleep until the next interrupt (the radio, the serial port, or the 1 ms system tick). The radio keeps listening.
     HAL_PWR_EnterSLEEPMode(PWR_MAINREGULATOR_ON, PWR_SLEEPENTRY_WFI);
 }

@@ -3,10 +3,14 @@
 // LACF 3.0 digipeater with the PPM tables (digipeat only: no GPS, no iGate, no tracking)
 // Target: Ebyte E77-400MBL-01 (STM32WLE5CC)
 // Build:  PlatformIO environment "e77_lacf3_digi_full"
+//
+// These values are the DEFAULTS. Over the serial port (115200 baud) "help" lists commands that change nearly all of them
+// ("set call K6ATV-2", "set mode wide", ..., then "save" to keep them in flash); a saved record overrides the defaults here.
+// Fixed at compile time: TCXO, RF switch, current limit, queue and table sizes, watchdog, serial speed.
 // ============================================================
 
 // ---- IDENTITY ------------------------------------------------
-// The digipeater neither relays nor beacons until a real callsign is set here.
+// The digipeater neither relays nor beacons until a real callsign is set (here, or over the serial port: set call K6ATV-2).
 #define MY_CALLSIGN         "N0CALL"
 #define MY_SSID             10              // 0 = no SSID
 
@@ -97,7 +101,7 @@
     END_OF_MODE_TABLE
 
 // ---- HOUSEKEEPING ---------------------------------------------
-#define DEBUG_SERIAL        1
+#define DEBUG_SERIAL        1           // 1: per-packet log (silence at run time with "set log off"); 0: remove it from the program. The command line is always on.
 #define DEBUG_BAUD          115200
 #define STATS_EVERY_MIN     10              // a counters line on the serial port
 #define WATCHDOG_S          20              // restart if the loop stops for this long (a remote site has nobody to press reset)

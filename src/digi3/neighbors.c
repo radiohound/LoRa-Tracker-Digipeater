@@ -112,11 +112,18 @@ int d3_parse_position(const char *dest, size_t dlen, const char *info, size_t il
     return isdigit((unsigned char)info[p]) ? uncompressed(info + p, ilen - p, lat, lon) : compressed(info + p, ilen - p, lat, lon);
 }
 
+/* cos for a latitude (|x| <= pi/2): five Taylor terms, error under 3e-5. Not cosf: that links the library's large-argument reduction, about 4 KB of flash. */
+static float cos_lat(float x)
+{
+    float x2 = x * x;
+    return 1.0f - x2 * (0.5f - x2 * (1.0f / 24.0f - x2 * (1.0f / 720.0f - x2 * (1.0f / 40320.0f))));
+}
+
 uint32_t d3_distance_m(int32_t lat1, int32_t lon1, int32_t lat2, int32_t lon2)
 {
     float mid = (float)(lat1 + lat2) * 0.5e-6f * 0.01745329f;
     float dy = (float)(lat2 - lat1) * 0.11132f;                           /* microdegrees to metres: 111,320 m per degree */
-    float dx = (float)(lon2 - lon1) * 0.11132f * cosf(mid);
+    float dx = (float)(lon2 - lon1) * 0.11132f * cos_lat(mid);
     return (uint32_t)sqrtf(dx * dx + dy * dy);
 }
 
