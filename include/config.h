@@ -42,7 +42,7 @@
 // ============================================================
 // APRS
 // ============================================================
-#define APRS_DESTINATION    "APZP01"
+#define APRS_DESTINATION    "APLAB1"           // registered tocall for this project
 #define BEACON_PATH         "WIDE1-1"
 #define APRS_SYMBOL_TABLE   '/'
 #define APRS_SYMBOL_CODE    'O'             // 'O' = balloon
