@@ -504,6 +504,16 @@ TCXO delay of 0 µs stops the radio transmitting at all (500 µs and 5 ms work).
 
 ---
 
+### Extra comment on some LoRa APRS beacons
+
+`comment2` is added after the normal `comment` (with a space between) on every `comment2_every`-th beacon: 1 is every beacon, 3 every third, 0 never (the default). It suits text that need not go out every time, such as a contact note, and saves airtime on the other beacons. Up to 43 characters. The count restarts at each power-up, so the first extra comment goes out on beacon number `comment2_every`.
+
+### Seeing LoRa APRS on SondeHub
+
+A LoRa APRS balloon appears on amateur.sondehub.org when an iGate puts its beacon on APRS-IS and SondeHub's APRS gateway accepts it. The gateway takes position reports with the balloon symbol (`/O`, which this firmware sends) and no `NOHUB` in the path. **The tracker page hides APRS payloads that have not been above 1,500 m**, so a board on the bench does not show until you switch on **Show Low Altitude APRS** in the page's settings (a browser setting). Once the payload has been above 1,500 m it stays visible. Horus packets are not affected. Use different callsigns for the two feeds (`call` + `ssid` for LoRa APRS, `horus_call` for Horus), as SondeHub's own wiki advises for payloads of different modulations.
+
+Checked: the beacons were stored by SondeHub (API) and shown with the low-altitude setting on. Not checked: how the page treats a flight above 1,500 m.
+
 ### Horus note (v3)
 
 `horus_note` is a short free text (up to 30 characters: letters, digits, space and `_ + / = - .`) sent in every Horus v3 packet, as an extra-sensor entry named `note` with a text value. It makes the packet longer, so it takes longer on the air: with a note the frame grows from 32 to 48 bytes (about 40 % more airtime, 4.4 s instead of 3.2 s at 100 baud), or 64 bytes for a long callsign and a long note. If a packet does not fit even in 64 bytes, the note is left out rather than the packet. Leave it empty for the shortest packets. Not used by version 2.

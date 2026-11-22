@@ -236,7 +236,7 @@ async function readSettings() {
 
 // ---- what each setting does, in plain words; the ranges come from the tracker itself (see buildForm) ----
 const GROUPS = [
-  ["LoRa APRS beacon", ["call", "ssid", "comment", "sym_table", "sym_code", "path", "tocall", "aprs", "gps_timeout"]],
+  ["LoRa APRS beacon", ["call", "ssid", "comment", "sym_table", "sym_code", "path", "tocall", "comment2", "comment2_every", "aprs", "gps_timeout"]],
   ["How often to send, by flight phase (the GPS decides the phase: ascent, descent, landed)", ["beacon_s", "aprs_desc", "aprs_gnd", "horus_asc", "horus_desc", "horus_gnd"]],
   ["LoRa radio (APRS). These need the radio restarted: the page does that when you save.", ["freq", "bw", "sf", "cr", "power", "sync", "preamble"]],
   ["Horus Binary (4FSK telemetry)", ["horus", "horus_ver", "horus_call", "horus_note", "horus_id", "horus_freq", "horus_power", "horus_sync", "horus_off"]],
@@ -249,6 +249,8 @@ const DESC = {
   sym_code: "APRS symbol: O is a balloon, > a car, k a truck.",
   path: "Digipeater path of the beacon, e.g. WIDE1-1. Empty for none.",
   tocall: "The APRS destination (tocall) this software uses. Leave it unless you have your own.",
+  comment2: "LoRa APRS: extra text added after the comment above on some beacons (see the next setting). For something that does not need to go out every time, like a contact note.",
+  comment2_every: "Add the extra text on every Nth beacon: 1 = every beacon, 3 = every third one, 0 = never.",
   beacon_s: "LoRa APRS: seconds between beacons while ascending (also on the bench, before any flight).",
   aprs_desc: "LoRa APRS: seconds between beacons while descending. Shorter is better here: receivers miss many packets on the way down.",
   aprs_gnd: "LoRa APRS: seconds between beacons after landing. The last good position is repeated.",

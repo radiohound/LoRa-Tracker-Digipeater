@@ -396,12 +396,19 @@ String buildAPRSPacket() {
         String(tkCfg.sym_code),
         true, (int)(altM * 3.28084f));
 
+    // comment2 is added after the normal comment on every comment2_every-th beacon (0 = never)
+    static uint32_t beaconCount = 0;
+    beaconCount++;
+    bool extra = tkCfg.comment2_every > 0 && tkCfg.comment2[0] && beaconCount % tkCfg.comment2_every == 0;
+    String comment = tkCfg.comment[0] ? String(" ") + tkCfg.comment : String();
+    if (extra) comment += String(" ") + tkCfg.comment2;
+
     return APRSPacketLib::generateBase91GPSBeaconPacket(
         String(myCallsignFull),
         String(tkCfg.tocall),
         String(tkCfg.path),
         String(tkCfg.sym_table),
-        gpsData) + (tkCfg.comment[0] ? String(" ") + tkCfg.comment : String());
+        gpsData) + comment;
 }
 
 // ============================================================

@@ -63,6 +63,8 @@ static const field_t FIELDS[] = {
     /* 29 */ NUMF ("horus_desc", horus_desc_s, 0, 0, 5, 86400, "s"),
     /* 30 */ NUMF ("horus_gnd", horus_gnd_s, 0, 0, 5, 86400, "s"),
     /* 31 */ STRF ("horus_note", horus_note, CS_NOTE, 0, 0, 30),
+    /* 32 */ STRF ("comment2", comment2, CS_TEXT, 0, 0, 43),
+    /* 33 */ NUMF ("comment2_every", comment2_every, 0, 0, 0, 255, "beacons"),
 };
 #define NFIELDS ((int)(sizeof FIELDS / sizeof FIELDS[0]))
 #define F_CALLSIGN (&FIELDS[0])

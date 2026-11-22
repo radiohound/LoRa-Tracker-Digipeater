@@ -43,6 +43,8 @@ typedef struct {
     uint16_t aprs_desc_s, aprs_gnd_s;
     uint16_t horus_asc_s, horus_desc_s, horus_gnd_s;
     char     horus_note[32];      /* v3: free text sent in every Horus packet; empty = none */
+    char     comment2[44];        /* LoRa APRS: extra text added to the comment on every Nth beacon */
+    uint8_t  comment2_every;      /* N; 0 = never */
 } tk_settings_t;
 
 /* What a command asks the caller to do (bit mask). */

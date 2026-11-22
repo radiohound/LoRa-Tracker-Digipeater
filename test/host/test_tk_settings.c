@@ -143,6 +143,13 @@ static void test_horus(void)
     run(&s, "set horus_off 10");   CHECK(said("below horus_sync") && s.horus_off_s == 5);
     run(&s, "set horus_sync 5");   CHECK(said("below horus_sync") && s.horus_sync_s == 10);
     run(&s, "set horus_div 0");    CHECK(said("out of range"));
+    /* the extra APRS comment, sent on every Nth beacon */
+    CHECK(s.comment2_every == 0 && s.comment2[0] == 0);
+    run(&s, "set comment2 Call 555 1234");  CHECK(strcmp(s.comment2, "Call 555 1234") == 0);
+    run(&s, "set comment2_every 5");        CHECK(s.comment2_every == 5);
+    run(&s, "set comment2_every 256");      CHECK(said("out of range") && s.comment2_every == 5);
+    run(&s, "set comment2 a|b");            CHECK(said("character not allowed") && strcmp(s.comment2, "Call 555 1234") == 0);
+    run(&s, "set comment2 -"); run(&s, "set comment2_every 0");
     /* the Horus note: text with spaces, limited characters and length */
     run(&s, "set horus_note Test flight 1");   CHECK(strcmp(s.horus_note, "Test flight 1") == 0);
     run(&s, "set horus_note bad!char");        CHECK(said("character not allowed") && strcmp(s.horus_note, "Test flight 1") == 0);
