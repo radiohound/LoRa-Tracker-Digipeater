@@ -20,6 +20,9 @@
 #include <STM32LowPower.h>
 #include <STM32RTC.h>
 #include "config.h"
+#if HORUS_ENABLED
+#include "horus/horus.h"
+#endif
 
 #if BMP280_ENABLED
 #include <Adafruit_BMP280.h>
@@ -77,6 +80,7 @@ struct Position {
     uint8_t minute = 0;
     uint8_t second = 0;
     bool    valid  = false;
+    uint32_t fixMs = 0;     // millis() when this fix was taken
 };
 
 static Position lastPos;
@@ -276,6 +280,7 @@ bool waitForFix(uint32_t timeoutMs) {
             lastPos.hour   = myGPS.getHour();
             lastPos.minute = myGPS.getMinute();
             lastPos.second = myGPS.getSecond();
+            lastPos.fixMs  = millis();
             lastPos.valid  = true;
             return true;
         }
@@ -378,6 +383,36 @@ String buildAPRSPacket() {
         String(APRS_SYMBOL_TABLE),
         gpsData) + MY_COMMENT;
 }
+
+// ============================================================
+// HORUS BINARY v2 — after the APRS beacon (optional)
+// Uses the fix sendBeacon() just took. HORUS_FAKE_FIX is for bench tests without a GPS.
+// ============================================================
+#if HORUS_ENABLED
+static void horusAfterBeacon() {
+    HorusFix f = {};
+#ifdef HORUS_FAKE_FIX
+    f.valid = true;  f.lat = 37.0058f; f.lon = -121.5683f; f.altM = 100; f.sats = 8;
+    f.hour = 12; f.minute = 34; f.second = 56;               // fixed test time, not real UTC
+    f.fixMs = millis();
+#else
+    f.valid = lastPos.valid;
+    f.lat = lastPos.lat; f.lon = lastPos.lon;
+#if BMP280_ENABLED
+    f.altM = bmpReady ? bmp.readAltitude(bmpSeaLevelHpa) : lastPos.altM;
+#else
+    f.altM = lastPos.altM;
+#endif
+    f.sats = lastPos.sats;
+    f.hour = lastPos.hour; f.minute = lastPos.minute; f.second = lastPos.second;
+    f.fixMs = lastPos.fixMs;
+#endif
+    f.speedKmh = lastPos.speed * 1.852f;                      // knots -> km/h
+    DBGLN(F("[Horus] TX"));
+    if (horusSendDivided(f)) { DBG(F("[Horus] sent #")); DBGLN(horusSequence()); }
+    radioReady = false;                                       // radio is in FSK mode now
+}
+#endif
 
 // ============================================================
 // SEND BEACON
@@ -825,6 +860,9 @@ void loop() {
     if (!radioReady) radioInit();
     if (!gpsReady)   gpsInit();
     sendBeacon();
+#if HORUS_ENABLED
+    horusAfterBeacon();
+#endif
     gpsPowerOff();
     radioSleep();
     enterDeepSleep((uint32_t)BEACON_INTERVAL_S * 1000UL);
@@ -832,6 +870,9 @@ void loop() {
 #elif OPERATING_MODE == MODE_TRACKER_DIGI
     if (!gpsReady) gpsInit();
     sendBeacon();
+#if HORUS_ENABLED
+    horusAfterBeacon();
+#endif
     gpsPowerOff();
     radioInit();
     radioRxFlag = false;

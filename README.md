@@ -395,36 +395,48 @@ Change `BEACON_INTERVAL_S` in `config.h`. Recommended minimums:
 
 ---
 
-## Horus Binary 4FSK — not supported on this hardware
+## Horus Binary v2 (4FSK) — optional
 
-Horus Binary v1/v2 4FSK (100 baud, 270 Hz tone spacing) was investigated for
-this platform and is **not feasible** on the STM32WLE5 with a TCXO-equipped
-E77 module.
+The tracker can send Horus Binary v2 (4FSK, 100 baud, 270 Hz tone spacing) after each APRS
+beacon, from the same E77. It is **off by default**. Build the `ebyte_e77_horus` environment, or
+set `HORUS_ENABLED 1` in `config.h`.
 
-The STM32WLE5 SubGhz IP generates 4FSK by switching between four CW
-frequencies using `SET_TX_CONTINUOUS_WAVE`. Each call to that command forces a
-full TCXO startup sequence (~5 ms) enforced in hardware, regardless of prior
-radio state. At 100 baud (10 ms/symbol), this creates ~50% dead time per
-symbol — effectively transmitting OOK at 100 Hz rather than 4FSK. The
-resulting OOK sidebands fall directly on adjacent tones (270 Hz spacing) and
-prevent the modem from distinguishing symbols.
+| Setting (`config.h`) | Meaning |
+|---|---|
+| `HORUS_PAYLOAD_ID` | Horus v2 payload ID, 256–65535. 256 is the shared test ID — request your own at [horusdemodlib](https://github.com/projecthorus/horusdemodlib) (`payload_id_list.txt`). |
+| `HORUS_FREQ_MHZ` | Lowest of the four tones, set 1 kHz above the nominal frequency so receivers tuned to the nominal frequency (USB) hear the tones in the audio band. Default 431.051 = nominal 431.050 MHz, the local Horus frequency here; 434.200 MHz (set 434.201) is the usual frequency in other regions. |
+| `HORUS_TX_POWER_DBM` | Above 14 dBm uses the high-power PA. See the PA note below for lower power. |
+| `HORUS_BEACON_DIVIDER` | Send Horus on every Nth beacon. |
+| `HORUS_TIME_SYNC_SECONDS`, `HORUS_TIME_SYNC_OFFSET_SECONDS` | Time slots, same scheme as RS41ng: transmit when GPS time (seconds from the top of the hour) satisfies `(t − OFFSET) mod SYNC == 0`. `0` = off. For two payloads on one frequency use the same SYNC and different OFFSETs, e.g. SYNC 10 with OFFSET 0 and 5 (a Horus v2 packet takes ~3.3 s, so two fit in 10 s). Both payloads need a GPS time lock for the slots to hold. |
 
-Approaches tried and confirmed not to work:
-- Setting fallback mode to STDBY_XOSC or FS before transmission
-- Calling `SetRfFrequency` while staying in TX CW mode
-- Writing the PLL frequency register directly via `writeRegister`
-- Reducing `tcxoDelay` to 0 or 1 ms
-- Single vs multiple `fsk4.write()` calls
+The packet is built from the GPS fix and the BMP280 altitude (if present). Horus runs in the
+tracker modes only (`TRACKER_ONLY`, `TRACKER_DIGI`).
 
-The root cause is a hardware limitation: the STM32WLE5 SubGhz IP always
-enforces the TCXO startup delay on every `SET_TX_CONTINUOUS_WAVE` command.
-This cannot be worked around in software.
+**Clock.** Horus needs accurate symbol timing. The Arduino STM32 core runs this MCU from MSI
+(48 MHz), an on-chip RC oscillator that measured about 1.9 % slow on an E77 — symbols went
+out at ~98 baud and receivers could not decode them. With Horus enabled the firmware runs the
+system clock from the TCXO instead (`HSE_SYSCLK`, `src/clock_hse.cpp`), which gives 100 baud.
+If HSE does not start (crystal-only module) it falls back to MSI.
 
-**Possible hardware solutions** (not implemented):
-- Always-on TCXO: solder the TCXO VCC line directly to 3.3V, bypassing DIO3
-  control. Tone transitions would then only require PLL relock (~52 µs).
-- Separate radio: add a Si4032 or Si4463 with native 4FSK hardware modulation
-  on SPI alongside the E77. This is how RS41 sondes work.
+**Power amplifier.** The E77-400M22S antenna is fed from the high-power PA. With a `TX_LP`
+entry in the RF switch table, RadioLib uses the low-power PA at 14 dBm and below, which is not
+connected to the antenna on this module. Set `RF_HP_PA_ONLY 1` to use the HP PA at every
+power level (range −9…22 dBm). The default of 0 keeps the previous behaviour.
+
+**Third-party code.** The Horus layer-2 coding (Golay FEC, interleaver, scrambler) is in
+`src/horus/`, copied unchanged from horusdemodlib under the **LGPL 2.1** (see
+`src/horus/NOTICE.md`). The rest of this repository is MIT. It is only compiled when Horus is
+enabled.
+
+**What was tested.** Over the air on an E77-400M22S (STM32WLE5) with an RSPduo recording and a
+horusdemodlib 0.6.x station (RTL-SDR): the packets decode with CRC OK and upload to SondeHub
+(with correct UTC time stamps) from a test firmware; the tracker build decodes with a fake
+GPS fix. **Not tested:** a real GPS fix in flight, and current draw with the TCXO clock.
+
+**Earlier conclusion corrected.** This section used to say Horus was impossible because every
+`SET_TX_CONTINUOUS_WAVE` forces a ~5 ms TCXO restart. In I/Q recordings no carrier gaps were
+found in any configuration: the failure was the slow MSI clock. One related finding: a radio
+TCXO delay of 0 µs stops the radio transmitting at all (500 µs and 5 ms work).
 
 ---
 

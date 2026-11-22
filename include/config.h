@@ -79,7 +79,9 @@
 // PA9 = SCL, PA10 = SDA (E77 MBL dev board standard wiring).
 // ============================================================
 #define GPS_I2C_CLOCK       400000          // 400 kHz fast mode
+#ifndef GPS_FIX_TIMEOUT_MS
 #define GPS_FIX_TIMEOUT_MS  120000          // 2 min max wait for fix
+#endif
 #define GPS_POWER_PIN       RADIOLIB_NC     // set to a pin if GPS has power switch
 
 // ============================================================
@@ -164,9 +166,72 @@
 // Update to match your carrier board schematic if different.
 // ============================================================
 #define RFSWITCH_PINS   {PA6, PA7, PB3, RADIOLIB_NC, RADIOLIB_NC}
+// The E77-400M22S antenna is fed from the high-power (HP) PA. With a TX_LP entry in the table,
+// RadioLib uses the low-power PA for 14 dBm and below, which is NOT connected to the antenna
+// on this module (very weak signal). Set RF_HP_PA_ONLY 1 to drop the LP entry so every
+// power level uses the HP PA (range then -9..22 dBm). Default 0 keeps the previous behaviour.
+#ifndef RF_HP_PA_ONLY
+#define RF_HP_PA_ONLY   0
+#endif
+#if RF_HP_PA_ONLY
+#define RFSWITCH_TABLE  \
+    {STM32WLx::MODE_IDLE,  {LOW,  LOW,  LOW}},  \
+    {STM32WLx::MODE_RX,    {LOW,  HIGH, LOW}},  \
+    {STM32WLx::MODE_TX_HP, {HIGH, LOW,  HIGH}}, \
+    END_OF_MODE_TABLE
+#else
 #define RFSWITCH_TABLE  \
     {STM32WLx::MODE_IDLE,  {LOW,  LOW,  LOW}},  \
     {STM32WLx::MODE_RX,    {LOW,  HIGH, LOW}},  \
     {STM32WLx::MODE_TX_LP, {HIGH, LOW,  HIGH}}, \
     {STM32WLx::MODE_TX_HP, {HIGH, LOW,  HIGH}}, \
     END_OF_MODE_TABLE
+#endif
+
+// ============================================================
+// HORUS BINARY v2 (4FSK, 100 baud) — OPTIONAL
+// Sends a Horus v2 packet from the GPS fix after each APRS beacon (tracker modes only).
+// Needs the system clock on the TCXO (HSE_SYSCLK, switched on automatically below), because
+// the core's default clock runs ~1.9% slow and the symbols would go out at ~98 baud.
+// Horus v2 needs a payload ID: ask for one at
+// https://github.com/projecthorus/horusdemodlib (payload_id_list.txt). 256 is the shared test ID.
+// Third-party LGPL code lives in src/horus/ (see src/horus/NOTICE.md).
+// ============================================================
+#ifndef HORUS_ENABLED
+#define HORUS_ENABLED          0
+#endif
+#ifndef HORUS_PAYLOAD_ID
+#define HORUS_PAYLOAD_ID       256              // 256..65535; request your own
+#endif
+#ifndef HORUS_FREQ_MHZ
+#define HORUS_FREQ_MHZ         431.051          // lowest tone; nominal 431.050 MHz (local Horus frequency) + 1 kHz
+                                                // 434.200 nominal (434.201 here) is the usual frequency elsewhere
+#endif
+#ifndef HORUS_TONE_SPACING_HZ
+#define HORUS_TONE_SPACING_HZ  270.0
+#endif
+#ifndef HORUS_BAUD
+#define HORUS_BAUD             100
+#endif
+#ifndef HORUS_TX_POWER_DBM
+#define HORUS_TX_POWER_DBM     20               // above 14 uses the HP PA; -9..22 needs RF_HP_PA_ONLY 1
+#endif
+// Time slots (same scheme as RS41ng): transmit only when the GPS time, counted in seconds from
+// the top of the hour, satisfies  (t - OFFSET) mod SYNC == 0.  SYNC 0 = off (send right after the beacon).
+// Payloads sharing a frequency must use the same SYNC and different OFFSETs, with the cycle long
+// enough for every packet (a Horus v2 packet takes about 3.3 s). Examples, two slots per cycle:
+//   10 s cycle: slot 1 = SYNC 10, OFFSET 0   slot 2 = SYNC 10, OFFSET 5   (an RS41ng sonde on a 10 s cycle)
+//   30 s cycle: slot 1 = SYNC 30, OFFSET 0   slot 2 = SYNC 30, OFFSET 15
+#ifndef HORUS_TIME_SYNC_SECONDS
+#define HORUS_TIME_SYNC_SECONDS         0
+#endif
+#ifndef HORUS_TIME_SYNC_OFFSET_SECONDS
+#define HORUS_TIME_SYNC_OFFSET_SECONDS  0
+#endif
+#ifndef HORUS_BEACON_DIVIDER
+#define HORUS_BEACON_DIVIDER   1                // send Horus on every Nth beacon
+#endif
+
+#ifndef HSE_SYSCLK
+#define HSE_SYSCLK             HORUS_ENABLED    // 1 = run the MCU from the TCXO instead of MSI
+#endif
