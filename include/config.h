@@ -40,6 +40,14 @@
 #define MY_COMMENT          " STM32WLE5 LoRa"
 
 // ============================================================
+// SETTINGS ON THE SERIAL PORT (src/settings/)
+// The values in this file are the defaults. Until a callsign other than N0CALL is saved, the tracker
+// transmits nothing. Set it with:  set call W2HAB-11  then  save   (type help for everything).
+// ============================================================
+#define DEFAULT_CALLSIGN    "N0CALL"
+#define DEFAULT_SSID        0
+
+// ============================================================
 // APRS
 // ============================================================
 #define APRS_DESTINATION    "APLAB1"           // registered tocall for this project

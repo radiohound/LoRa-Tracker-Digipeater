@@ -1,0 +1,14 @@
+# PC tests of the tracker's settings engine (no Arduino, no radio)
+CFLAGS ?= -O2 -g -Wall -Wextra -fsanitize=address,undefined
+SRC = ../../src/settings/tk_settings.c
+
+test: test_tk_settings
+	./test_tk_settings
+
+test_tk_settings: test_tk_settings.c $(SRC) ../../src/settings/tk_settings.h ../../include/config.h
+	$(CC) $(CFLAGS) -I../../include -I../../src/settings -o $@ test_tk_settings.c $(SRC)
+
+clean:
+	rm -rf test_tk_settings test_tk_settings.dSYM
+
+.PHONY: test clean
