@@ -13,7 +13,9 @@
 // DEBUG
 // ============================================================
 #define DEBUG_SERIAL        1
+#ifndef DEBUG_BAUD
 #define DEBUG_BAUD          115200
+#endif
 
 // ============================================================
 // OPERATING MODE
@@ -37,6 +39,18 @@
 // The callsign and SSID are settings now (see SETTINGS ON THE SERIAL PORT below), not compile-time values.
 // ============================================================
 #define MY_COMMENT          " STM32WLE5 LoRa"     // default APRS comment
+
+// ============================================================
+// KEYS (read once at power-up or reset)
+//   Held on KEY_BOOTLOADER_PIN: jump to the chip's own serial bootloader (USART2 on PA2/PA3, the USB-serial pins), so the
+//   firmware can be updated from the browser setup page (tools/setup.html) with no ST-LINK. On the E77 dev board this is Key 1.
+//   Held on KEY_DEFAULTS_PIN: put the defaults back and save them (the rescue for forgotten or bad settings). On the dev board
+//   this is the user key. Not used when CUTDOWN_ENABLED, because PA0 is then the cutdown output.
+// Keys are pulled up, a pressed key reads low. A flight board with another signal on PA1 or PA0 must set KEYS_ENABLED 0.
+// ============================================================
+#define KEYS_ENABLED        1
+#define KEY_BOOTLOADER_PIN  PA1
+#define KEY_DEFAULTS_PIN    PA0
 
 // ============================================================
 // SETTINGS ON THE SERIAL PORT (src/settings/)

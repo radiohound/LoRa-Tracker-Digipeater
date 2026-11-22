@@ -49,6 +49,28 @@ static void test_defaults_and_callsign(void)
     run(&s, "SET Call w2hab-11");  CHECK(tks_call_is_set(&s));    /* commands and names are not case sensitive */
 }
 
+static void test_separate_callsigns(void)
+{
+    tk_settings_t s;
+    tks_defaults(&s);
+    CHECK(!tks_call_is_set(&s) && !tks_horus_call_is_set(&s));              /* nothing set: neither sends */
+    run(&s, "set horus_call K6ATV/B1");
+    CHECK(!tks_call_is_set(&s) && tks_horus_call_is_set(&s));               /* Horus alone, no APRS callsign */
+    run(&s, "set horus_call N0CALL-3");   CHECK(!tks_horus_call_is_set(&s));/* N0CALL with an SSID is still not set */
+    run(&s, "set horus_call N0CALL/1");   CHECK(!tks_horus_call_is_set(&s));
+    run(&s, "set horus_call N0CALLX");    CHECK(tks_horus_call_is_set(&s)); /* a different callsign that starts with the letters */
+    run(&s, "set horus_call -");
+    run(&s, "set call W2HAB-11");
+    CHECK(tks_call_is_set(&s) && tks_horus_call_is_set(&s));                /* horus_call empty: follows the APRS callsign */
+    run(&s, "set horus_call K6ATV/B1");
+    run(&s, "set call N0CALL");
+    CHECK(!tks_call_is_set(&s) && tks_horus_call_is_set(&s));               /* APRS off, Horus keeps its own */
+    {   char hc[20]; tks_horus_call(&s, hc, sizeof hc); CHECK(strcmp(hc, "K6ATV/B1") == 0); }
+    run(&s, "set call W2HAB-11");
+    {   char hc[20], fc[16]; tks_horus_call(&s, hc, sizeof hc); tks_fullcall(&s, fc, sizeof fc);
+        CHECK(strcmp(hc, "K6ATV/B1") == 0 && strcmp(fc, "W2HAB-11") == 0); } /* two different callsigns at once */
+}
+
 static void test_numbers_and_radio(void)
 {
     tk_settings_t s; unsigned f;
@@ -131,7 +153,7 @@ static void test_show_help(void)
     run(&s, "show");   CHECK(said("callsign N0CALL") && said("call = N0CALL") && said("freq = 433.775 MHz *") && said("beacon_s = 30 s") && !said("beacon_s = 30 s *") && said("horus_ver = 3") && said("* = LoRa radio setting"));
     run(&s, "get freq"); CHECK(said("freq = 433.775 MHz") && !said("*"));
     run(&s, "get nonsense"); CHECK(said("error"));
-    run(&s, "help");   CHECK(said("* freq") && said("  horus_ver") && said("Nothing is sent while the callsign is N0CALL"));
+    run(&s, "help");   CHECK(said("* freq") && said("  horus_ver") && said("each need a real callsign"));
     run(&s, "?");      CHECK(said("Commands"));
     CHECK(run(&s, "") == 0 && run(&s, "   ") == 0);
 }
@@ -192,7 +214,7 @@ static void test_record(void)
 
 int main(void)
 {
-    test_defaults_and_callsign(); test_numbers_and_radio(); test_text(); test_horus(); test_show_help(); test_record();
+    test_defaults_and_callsign(); test_separate_callsigns(); test_numbers_and_radio(); test_text(); test_horus(); test_show_help(); test_record();
     printf("%d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;
 }

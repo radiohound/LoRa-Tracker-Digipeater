@@ -417,7 +417,7 @@ static void horusAfterBeacon() {
 #if BMP280_ENABLED
     if (bmpReady) { f.hasTemp = true; f.tempC = bmp.readTemperature(); }
 #endif
-    if (!tkCfg.horus || !tks_call_is_set(&tkCfg)) return;
+    if (!tkCfg.horus || !tks_horus_call_is_set(&tkCfg)) return;                  // Horus has its own callsign check
     DBGLN(F("[Horus] TX"));
     bool force = tkHorusNow; tkHorusNow = false;
     if (force ? horusSend(f) : horusSendDivided(f)) { DBG(F("[Horus] sent #")); DBGLN(horusSequence()); }
@@ -832,6 +832,7 @@ void enterDeepSleep(uint32_t ms) {
 // SETUP
 // ============================================================
 void setup() {
+    tkKeysAtBoot();                                     // Key 1 held = bootloader, user key = defaults
 #if DEBUG_SERIAL
     Serial.begin(DEBUG_BAUD);
     delay(500);

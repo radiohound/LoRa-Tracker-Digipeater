@@ -7,6 +7,7 @@
 #include "config.h"
 #include "horus.h"
 #include "horus_v3.h"
+#include "../settings/tk_glue.h"
 
 extern "C" {
 #include "horus_l2.h"
@@ -130,8 +131,8 @@ static uint32_t alignToSlot(HorusFix& f) {
         const uint32_t off    = ((uint32_t)settings.offsetSeconds * 1000UL) % period;
         uint32_t phase = ((t % 3600000UL) + period - off) % period;
         if (phase) {
-            uint32_t wait = period - phase;
-            delay(wait);
+            uint32_t wait = period - phase, t0 = millis();
+            while (millis() - t0 < wait) { tkSerialPoll(); delay(5); }   // keep the command line alive while waiting
             t += wait;
         }
     }

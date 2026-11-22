@@ -71,8 +71,12 @@ void tks_fullcall(const tk_settings_t *s, char *out, size_t cap);
 /* The callsign for Horus v3: horus_call, or the full callsign when horus_call is empty. */
 void tks_horus_call(const tk_settings_t *s, char *out, size_t cap);
 
-/* 1 when a real callsign is set. With N0CALL (the default) the firmware must not transmit. */
+/* 1 when a real callsign is set for LoRa APRS. With N0CALL (the default) the firmware must not send APRS. */
 int tks_call_is_set(const tk_settings_t *s);
+
+/* 1 when the callsign Horus would use is a real one: horus_call if it is set (its part before any - or / must not be N0CALL),
+ * otherwise the APRS callsign. LoRa APRS and Horus can use different callsigns, and each is checked on its own. */
+int tks_horus_call_is_set(const tk_settings_t *s);
 
 /* The flash record. pack returns its length (a multiple of 8, padded with 0xFF) or 0 if cap is too small.
  * unpack starts from the defaults and applies every valid entry; returns the number applied, or a negative TKS_E_* when the record is not

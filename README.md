@@ -423,6 +423,29 @@ show   get NAME   help   defaults   beacon   horus   reboot [force]   exit
 - `OPERATING_MODE` is still a compile-time choice, and the CAD digipeater modes do not read the command line yet.
 - The engine is `src/settings/tk_settings.c` (plain C, tested on a PC: `cd test/host && make test`), the flash and
   serial glue is `src/settings/tk_glue.cpp`.
+- **LoRa APRS and Horus can use different callsigns.** `call` + `ssid` is the APRS source; `horus_call` is the Horus v3
+  callsign (empty = the APRS one). Each is checked on its own: with `call` at `N0CALL` Horus still sends if `horus_call`
+  is a real callsign, and the other way round.
+
+### Setup page (browser)
+
+`tools/setup.html` does the same from a browser (Chrome or Edge, Web Serial, no terminal program): connect, read, change
+the settings in a form, save, and check that every value reads back as sent. It also updates the firmware over the USB
+cable. Open it from GitHub Pages (enable Pages for this repository, serving the `main` branch) or as a saved file. Close any program that
+has the serial port open first (a terminal, `pio device monitor`): two readers split the bytes. If the tracker does not answer, press
+Reset and Connect within 3 seconds.
+
+Update over USB, no ST-LINK: with the page connected, **Flash firmware** types `bootloader`, and the chip's built-in
+serial bootloader takes over; or hold **Key 1** (PA1) and tap Reset. Only the program area is rewritten, so the saved
+settings stay. The first firmware on a board still needs an ST-LINK once. `tools/flash_serial.py` does the same from the
+command line. **Held at power-up, the user key (PA0) puts the defaults back and saves them.** Set `KEYS_ENABLED 0` in `config.h` on
+a flight board that uses PA0 or PA1 for something else. `firmware/manifest.json` (optional) lists firmware that comes with the page.
+
+The page is tested without hardware against a simulated tracker built from the same settings engine
+(`cd test/host && make test-page`, needs `node`). Tested on an E77: the `bootloader` command puts the chip into its
+ROM bootloader (device ID 0x497) and `tools/flash_serial.py` then erased, wrote, verified and started a 130 KB build in
+37 s with the saved settings kept. *Not yet tested on a board:* the same from the browser page, the Key 1 and user key
+(PA0) presses at power-up, and the page against real hardware.
 
 ---
 

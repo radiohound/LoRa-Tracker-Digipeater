@@ -109,6 +109,15 @@ int tks_call_is_set(const tk_settings_t *s)
     return s->call[0] && strcmp(s->call, "N0CALL") != 0;
 }
 
+int tks_horus_call_is_set(const tk_settings_t *s)
+{
+    char base[16]; size_t n = 0;
+    if (!s->horus_call[0]) return tks_call_is_set(s);
+    while (s->horus_call[n] && s->horus_call[n] != '-' && s->horus_call[n] != '/' && n + 1 < sizeof base) { base[n] = s->horus_call[n]; n++; }
+    base[n] = 0;
+    return n > 0 && strcmp(base, "N0CALL") != 0;
+}
+
 /* ---- field access ---- */
 static int32_t get_i(const tk_settings_t *s, const field_t *f)
 {
@@ -322,7 +331,7 @@ void tks_menu(tks_emit_t emit, void *ctx)
     say(emit, ctx, "  save                 keep the changes after a power-off  defaults      load the compiled-in values");
     say(emit, ctx, "  apply                use changed LoRa radio settings (freq, bw, sf, cr, power, sync, preamble)");
     say(emit, ctx, "  beacon  horus        send the APRS beacon / a Horus packet now      reboot [force]  help");
-    say(emit, ctx, "Changes work at once, except the LoRa radio settings, which need apply. Nothing is sent while the callsign is N0CALL.");
+    say(emit, ctx, "Changes work at once, except the LoRa radio settings, which need apply. LoRa APRS and Horus each need a real callsign (N0CALL = not set, nothing is sent).");
 }
 
 unsigned tks_exec(tk_settings_t *s, const char *line, tks_emit_t emit, void *ctx)

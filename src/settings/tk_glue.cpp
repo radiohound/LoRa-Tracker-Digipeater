@@ -17,6 +17,7 @@ volatile bool tkHorusNow  = false;
 static tk_settings_t radioApplied;      // the LoRa settings the radio is running with
 static bool dirty     = false;          // changed since the last save
 static bool setupMode = false;          // in the boot window: stay in setup until "exit"
+static bool defaultsKey = false;        // the defaults key was held at power-up
 
 #define OUT(...)   Serial.print(__VA_ARGS__)
 #define OUTLN(...) Serial.println(__VA_ARGS__)
@@ -69,6 +70,43 @@ static void saveSettings() {
     else { OUT(F("error: flash write failed, code ")); OUTLN((unsigned long)HAL_FLASH_GetError()); }
 }
 
+// ---------------------------------------------------------------- keys and the bootloader
+// The chip's own bootloader lives in system memory (ST application note AN3155). It must be entered before the serial port
+// and most peripherals are started, so it finds the chip as after a reset; the "bootloader" command resets the chip into the
+// same state first.
+static void jumpToBootloader() {
+    const uint32_t BOOT = 0x1FFF0000UL;
+    __disable_irq();
+    HAL_RCC_DeInit(); HAL_DeInit();
+    SysTick->CTRL = 0; SysTick->LOAD = 0; SysTick->VAL = 0;
+    for (int i = 0; i < 2; i++) { NVIC->ICER[i] = 0xFFFFFFFFUL; NVIC->ICPR[i] = 0xFFFFFFFFUL; }
+    __HAL_SYSCFG_REMAPMEMORY_SYSTEMFLASH();
+    SCB->VTOR = 0;
+    __set_MSP(*(volatile uint32_t *)BOOT);
+    ((void (*)(void))(*(volatile uint32_t *)(BOOT + 4)))();
+    for (;;) {}
+}
+
+// A software reset that comes back into the bootloader: a magic word in a backup register survives the reset.
+#define BOOT_MAGIC 0xB007B007UL
+
+void tkKeysAtBoot() {
+#if KEYS_ENABLED
+    __HAL_RCC_RTCAPB_CLK_ENABLE();
+    HAL_PWR_EnableBkUpAccess();
+    if (TAMP->BKP7R == BOOT_MAGIC) { TAMP->BKP7R = 0; jumpToBootloader(); }   // register 7: the RTC library uses 0 to 2          // "bootloader" command
+    pinMode(KEY_BOOTLOADER_PIN, INPUT_PULLUP);
+#if !CUTDOWN_ENABLED
+    pinMode(KEY_DEFAULTS_PIN, INPUT_PULLUP);
+#endif
+    delay(10);                                      // the keys have a debounce capacitor
+    if (digitalRead(KEY_BOOTLOADER_PIN) == LOW) jumpToBootloader();
+#if !CUTDOWN_ENABLED
+    defaultsKey = digitalRead(KEY_DEFAULTS_PIN) == LOW;
+#endif
+#endif
+}
+
 // ---------------------------------------------------------------- Horus
 void tkPushHorus() {
 #if HORUS_ENABLED
@@ -100,32 +138,55 @@ void tkSettingsBegin() {
         else if (r < 0)            OUTLN(F("[Settings] the saved record is damaged: using the defaults from config.h"));
         else { OUT(F("[Settings] loaded ")); OUT(r); OUT(F(" from flash")); if (rej) { OUT(F(", ")); OUT(rej); OUT(F(" refused (out of range)")); } OUTLN(); }
     }
+    if (defaultsKey) {
+        tks_defaults(&tkCfg);
+        OUTLN(F("[Boot] defaults key held: the defaults from config.h are back and are saved now"));
+        radioApplied = tkCfg;
+        saveSettings();
+    }
     radioApplied = tkCfg;
     tkOnSettingsChanged();
     tkPushHorus();
     char fc[16]; tks_fullcall(&tkCfg, fc, sizeof fc);
     OUT(F("[Boot] callsign ")); OUTLN(fc);
-    if (!tks_call_is_set(&tkCfg)) OUTLN(F("[Boot] callsign is N0CALL: nothing is transmitted. Type  set call YOURCALL-SSID  then  save"));
+    if (!tks_call_is_set(&tkCfg)) OUTLN(F("[Boot] callsign is N0CALL: no LoRa APRS is transmitted. Type  set call YOURCALL-SSID  then  save"));
+    if (tkCfg.horus) {
+        char hc[20]; tks_horus_call(&tkCfg, hc, sizeof hc);
+        OUT(F("[Boot] Horus callsign ")); OUTLN(hc);
+        if (!tks_horus_call_is_set(&tkCfg)) OUTLN(F("[Boot] no Horus callsign: no Horus is transmitted. Type  set horus_call YOURCALL  (empty = the callsign above)"));
+    }
 #if !HORUS_ENABLED
     if (tkCfg.horus) OUTLN(F("[Boot] horus is on, but this firmware was built without Horus"));
 #endif
 }
 
 // ---------------------------------------------------------------- the command line
-static void emitLine(void *, const char *l) { OUTLN(l); }
+static void emitLine(void *, const char *l) { OUTLN(l); Serial.flush(); }   // flush: a burst of lines overran the serial buffer and lost characters
 
 static void handleCommand(const char *line) {
     if (strcasecmp(line, "exit") == 0 || strcasecmp(line, "run") == 0) {
         if (setupMode) { setupMode = false; OUTLN(F("ok: running")); } else OUTLN(F("(already running)"));
         return;
     }
+#if KEYS_ENABLED
+    if (strcasecmp(line, "bootloader") == 0) {      // for the setup page's firmware update: the same as holding Key 1 at reset
+        if (dirty) { OUTLN(F("there are unsaved changes: type save first, or reboot force to drop them")); return; }
+        OUTLN(F("entering the bootloader (the firmware update takes over the serial port)..."));
+        Serial.flush(); delay(50);
+        __HAL_RCC_RTCAPB_CLK_ENABLE(); HAL_PWR_EnableBkUpAccess();
+        TAMP->BKP7R = BOOT_MAGIC;
+        NVIC_SystemReset();
+        return;
+    }
+#endif
     unsigned fl = tks_exec(&tkCfg, line, emitLine, nullptr);
     if (fl & TKS_CHANGED) {
         tkOnSettingsChanged();
         tkPushHorus();
         if (!dirty) OUTLN(F("(not saved yet: type save to keep it after a power-off)"));
         dirty = true;
-        if (!tks_call_is_set(&tkCfg)) OUTLN(F("(callsign is still N0CALL: nothing is transmitted)"));
+        if (!tks_call_is_set(&tkCfg)) OUTLN(F("(LoRa APRS callsign is still N0CALL: no APRS is transmitted)"));
+        if (tkCfg.horus && !tks_horus_call_is_set(&tkCfg)) OUTLN(F("(no Horus callsign: no Horus is transmitted)"));
     }
     if (fl & TKS_APPLY) {
         tkApplyRadio();
@@ -138,7 +199,7 @@ static void handleCommand(const char *line) {
         else { tkBeaconNow = true; OUTLN(F("ok: beacon cycle starts now")); }
     }
     if (fl & TKS_HORUS) {
-        if (!tks_call_is_set(&tkCfg)) OUTLN(F("error: set a callsign first"));
+        if (!tks_horus_call_is_set(&tkCfg)) OUTLN(F("error: set a Horus callsign (horus_call) or the main callsign first"));
 #if HORUS_ENABLED
         else if (!tkCfg.horus) OUTLN(F("error: horus is off (set horus on)"));
         else { tkBeaconNow = tkHorusNow = true; OUTLN(F("ok: a Horus packet follows the next beacon cycle, which starts now")); }
