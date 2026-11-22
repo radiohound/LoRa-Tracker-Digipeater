@@ -247,6 +247,7 @@ void gpsInit() {
     myGPS.setUART2Output(0);
     myGPS.setI2COutput(COM_TYPE_UBX);
     myGPS.setNavigationFrequency(1);
+    myGPS.setAutoPVT(true);                        // a position every second without polling
     myGPS.setDynamicModel(DYN_MODEL_AIRBORNE1g);   // essential for HAB > 12 km
     myGPS.saveConfiguration();
 
@@ -275,12 +276,15 @@ static float lastVelUpMs = 0.0f, lastGroundKmh = 0.0f;
 
 // Reads the newest GPS solution into lastPos when it has a usable fix.
 static bool gpsReadPvt() {
+    // The GPS sends a position by itself every second (setAutoPVT in gpsInit), so this never waits.
+    // Read each value once: asking for the same one twice makes the library poll the GPS again.
     myGPS.checkUblox();
     if (myGPS.getPVT() && myGPS.getFixType() != 0 && myGPS.getSIV() > 3) {
+        int32_t gs = myGPS.getGroundSpeed();                        // mm/s
         lastPos.lat    = myGPS.getLatitude()    / 1e7f;
         lastPos.lon    = myGPS.getLongitude()   / 1e7f;
         lastPos.altM   = myGPS.getAltitudeMSL() / 1000.0f;
-        lastPos.speed  = (int)(myGPS.getGroundSpeed() / 514.44f);  // mm/s → knots
+        lastPos.speed  = (int)(gs / 514.44f);                       // mm/s → knots
         lastPos.course = myGPS.getHeading() / 100000;
         lastPos.sats   = myGPS.getSIV();
         lastPos.hour   = myGPS.getHour();
@@ -289,7 +293,7 @@ static bool gpsReadPvt() {
         lastPos.fixMs  = millis();
         lastPos.valid  = true;
         lastVelUpMs    = -(float)myGPS.getNedDownVel() / 1000.0f;   // mm/s, down is positive
-        lastGroundKmh  = myGPS.getGroundSpeed() / 277.78f;          // mm/s -> km/h
+        lastGroundKmh  = gs / 277.78f;                              // mm/s -> km/h
         return true;
     }
     return false;
@@ -983,6 +987,7 @@ static void runTrackerScheduler() {
     }
 #endif
     if (aprsDue) {
+        uint32_t startMs = millis();            // the interval counts from the start of the beacon, not its end
         gpsPollAndPhase(true);
         tkBeaconNow = false;
         if (!firstFixDone) {
@@ -1002,8 +1007,8 @@ static void runTrackerScheduler() {
         }
 #endif
         if (tkCfg.aprs && lastPos.valid) { if (!radioReady) radioInit(); radio.standby(); radioTransmit(buildAPRSPacket()); }
-        lastAprsMs = millis();
-        nextAprsMs = lastAprsMs + aprsIntervalMs();
+        lastAprsMs = startMs;
+        nextAprsMs = startMs + aprsIntervalMs();
         backToLoraRx();
         return;
     }
