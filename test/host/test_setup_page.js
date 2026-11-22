@@ -48,7 +48,7 @@ function makeEnv(sim, lossRate) {
   const navigator = { serial: { requestPort: async () => port } };
   const ctx = { document, navigator, Option, TextDecoder, TextEncoder, setTimeout, clearTimeout, console, Promise, Uint8Array, crypto: {}, fetch: undefined, JSON, Number, Object, Math, Date };
   vm.createContext(ctx);
-  vm.runInContext(script + "\n;globalThis.__api = { get settings() { return settings; }, readSettings, save, wantedPairs, dualLabel, symbolPreview };", ctx);
+  vm.runInContext(script + "\n;globalThis.__api = { get settings() { return settings; }, readSettings, save, wantedPairs, dualLabel, symbolPreview, get advDetails() { return advDetails; } };", ctx);
   return { els, created, document, ctx, api: ctx.__api };
 }
 
@@ -72,6 +72,16 @@ async function session(lossRate, label, call) {
   field("sf").value = "7";  api.dualLabel(); CHECK(dualName() === "Also transmit on SF12" && !field("dual_sf").disabled, label + ": dual_sf named SF12 when the main SF is 7");
   field("sf").value = "9";  api.dualLabel(); CHECK(dualName() === "Also transmit on the other SF" && field("dual_sf").disabled, label + ": dual_sf off for SF9");
   field("sf").value = "12"; api.dualLabel();
+
+  // basic settings first; the rest sits behind the closed "Advanced settings" fold
+  const inAdv = n => { for (let e = field(n); e; e = e.parent) if (e === api.advDetails) return true; return false; };
+  CHECK(!!api.advDetails && api.advDetails.className === "adv" && api.advDetails.open === false, label + ": the Advanced fold exists and starts closed");
+  const basic = ["call", "ssid", "comment", "sym_table", "sym_code", "aprs", "beacon_s", "dual_sf", "horus", "horus_call", "horus_note", "horus_freq"];
+  const advanced = ["path", "comment2", "comment2_every", "gps_timeout", "freq", "bw", "sf", "cr", "power", "sync", "preamble", "aprs_desc", "aprs_gnd",
+                    "horus_asc", "horus_desc", "horus_gnd", "horus_ver", "horus_id", "horus_power", "horus_sync", "horus_off"];
+  CHECK(basic.every(n => field(n) && !inAdv(n)), label + ": the basic settings are outside the fold (" + basic.filter(n => !field(n) || inAdv(n)).join(",") + ")");
+  CHECK(advanced.every(n => field(n) && inAdv(n)), label + ": the other settings are inside the fold (" + advanced.filter(n => !field(n) || !inAdv(n)).join(",") + ")");
+  CHECK(!field("tocall") && !field("horus_div"), label + ": tocall and the unused horus_div are not on the page");
 
   // the APRS symbol preview: which cell of which sheet the table and code make (cell = ord(c) - 33, 16 per row, 48 px)
   const box = created.find(e => e.className === "sym");
@@ -101,8 +111,10 @@ async function session(lossRate, label, call) {
   await els.save.onclick();
   CHECK(els.formerr.hidden === false && /sf/.test(els.formerr.textContent), label + ": refused value is reported (" + els.formerr.textContent + ")");   // "out of range", or the read-back mismatch when the reply lost a character
   CHECK(!/Saved to the tracker/.test(els.status.textContent), label + ": a refused value is not reported as saved");
+  CHECK(api.advDetails.open === true, label + ": the Advanced fold opens when a value inside it is refused");
   await els.reread.onclick();
   CHECK(api.settings.sf === "12", label + ": the refused value did not change the tracker");
+  CHECK(api.advDetails.open === true, label + ": reading again keeps the fold as the user left it");
 
   // actions
   await els.actbeacon.onclick(); CHECK(/beacon cycle starts/.test(els.status.textContent), label + ": beacon action");

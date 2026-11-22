@@ -48,6 +48,8 @@ details { font-size: 14px; color: var(--muted); }
 .grid { display: grid; gap: 10px; margin: 10px 0; }
 .steps { margin: 6px 0; padding-left: 20px; }
 .check .desc { flex-basis: 100%; }
+details.adv > summary { cursor: pointer; font-weight: 600; color: var(--ink); padding: 6px 0; }
+details.adv[open] > summary { margin-bottom: 4px; }
 .symrow { display: flex; align-items: center; gap: 12px; }
 .sym { width: 48px; height: 48px; flex: none; border: 1px solid var(--line); border-radius: 6px; background-color: #fff; background-repeat: no-repeat; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -238,10 +240,14 @@ async function readSettings() {
 
 // ---- what each setting does, in plain words; the ranges come from the tracker itself (see buildForm) ----
 const GROUPS = [
-  ["LoRa APRS beacon", ["call", "ssid", "comment", "sym_table", "sym_code", "path", "comment2", "comment2_every", "aprs", "dual_sf", "gps_timeout"]],
-  ["How often to send, by flight phase (the GPS decides the phase: ascent, descent, landed)", ["beacon_s", "aprs_desc", "aprs_gnd", "horus_asc", "horus_desc", "horus_gnd"]],
-  ["LoRa radio (APRS). These need the radio restarted: the page does that when you save.", ["freq", "bw", "sf", "cr", "power", "sync", "preamble"]],
-  ["Horus Binary (4FSK telemetry)", ["horus", "horus_ver", "horus_call", "horus_note", "horus_id", "horus_freq", "horus_power", "horus_sync", "horus_off"]],
+  // basic: what most people change
+  ["LoRa APRS beacon", ["call", "ssid", "comment", "sym_table", "sym_code", "aprs", "beacon_s", "dual_sf"]],
+  ["Horus Binary (4FSK telemetry)", ["horus", "horus_call", "horus_note", "horus_freq"]],
+  // advanced: behind the "Advanced settings" fold (the third item is true)
+  ["LoRa APRS, more", ["path", "comment2", "comment2_every", "gps_timeout"], true],
+  ["LoRa radio (APRS). These need the radio restarted: the page does that when you save.", ["freq", "bw", "sf", "cr", "power", "sync", "preamble"], true],
+  ["How often to send once the GPS says the payload is descending or has landed", ["aprs_desc", "aprs_gnd", "horus_asc", "horus_desc", "horus_gnd"], true],
+  ["Horus, more", ["horus_ver", "horus_id", "horus_power", "horus_sync", "horus_off"], true],
 ];
 const DESC = {
   call: "Your callsign without the SSID. Until it is set to something other than N0CALL the tracker sends no LoRa APRS.",
@@ -282,13 +288,17 @@ const BW = ["7.8", "10.4", "15.6", "20.8", "31.25", "41.7", "62.5", "125", "250"
 const CR = ["4/5", "4/6", "4/7", "4/8"];
 const RADIO = ["freq", "bw", "sf", "cr", "power", "sync", "preamble"];     // these need "apply" before they take effect
 
+let advDetails = null, advNames = new Set();
 function buildForm() {
   const host = $("groups"); host.textContent = ""; orig = {};
-  for (const [title, names] of GROUPS) {
+  const wasOpen = !!(advDetails && advDetails.open);        // reading again rebuilds the form: keep the fold as the user left it
+  advDetails = null; advNames = new Set();
+  for (const [title, names, advanced] of GROUPS) {
     const sec = document.createElement("div"); sec.className = "grid";
     const h = document.createElement("b"); h.textContent = title; sec.append(h);
     for (const name of names) {
       const m = meta[name], raw = settings[name]; if (!m || raw === undefined) continue;
+      if (advanced) advNames.add(name);
       const d = m.desc; let el, val;
       if (d === "on or off") { el = document.createElement("select"); ["on", "off"].forEach(o => el.add(new Option(o, o))); val = raw; }
       else if (name === "bw") { el = document.createElement("select"); val = raw.split(" ")[0]; (BW.includes(val) ? BW : BW.concat(val)).forEach(o => el.add(new Option(o + " kHz", o))); }
@@ -304,7 +314,15 @@ function buildForm() {
       lab.append(b, sm, dd, el); sec.append(lab);
       if (name === "sym_code") sec.append(makeSymbolRow());
     }
-    host.append(sec);
+    if (advanced) {
+      if (!advDetails) {
+        advDetails = document.createElement("details"); advDetails.className = "adv"; advDetails.open = wasOpen;
+        const sum = document.createElement("summary");
+        sum.textContent = "Advanced settings (more beacon options, the LoRa radio, rates by flight phase, Horus details)";
+        advDetails.append(sum); host.append(advDetails);
+      }
+      advDetails.append(sec);
+    } else host.append(sec);
   }
   $("n0call").hidden = !/^N0CALL(-\d+)?$/.test(shownCall);
   $("form").hidden = false;
@@ -403,6 +421,9 @@ async function sendSets(pairs) {
   return { failed, radio };
 }
 
+// A refused or mismatching value may sit in the folded Advanced section: open it so the field can be seen.
+function revealAdvanced(names) { if (advDetails && names.some(n => advNames.has(n))) advDetails.open = true; }
+
 async function save() {
   const fe = $("formerr"); fe.hidden = true;
   const pairs = wantedPairs();
@@ -411,10 +432,11 @@ async function save() {
   try {
     const { failed, radio } = await sendSets(pairs);
     let err = failed.length ? "Not accepted: " + failed.join("; ") : "";
+    revealAdvanced(failed.map(f => f.split(":")[0]));
     if (!err && radio) {
       const out = await ask("apply", l => /^(ok: radio|error:)/.test(l), 5000);
       const bad = out.find(l => l.startsWith("error:"));
-      if (bad) err = bad.slice(6).trim();
+      if (bad) { err = bad.slice(6).trim(); revealAdvanced(RADIO); }
     }
     if (err) { fe.hidden = false; fe.textContent = err; status("Nothing saved. Press Read again to see what the tracker holds now."); return; }
     const out = await ask("save", l => /^(saved|already|error)/.test(l), 3000);
@@ -424,6 +446,7 @@ async function save() {
     const r = await readStable();
     const wrong = pairs.filter(([n, v]) => !sameValue(n, v, r.values[n])).map(([n, v]) => n + " (wanted " + v + ", the tracker has " + (r.values[n] === undefined ? "nothing" : r.values[n]) + ")");
     await readSettings();                                   // refresh the form first: it sets its own status line
+    revealAdvanced(wrong.map(w => w.split(" ")[0]));
     if (wrong.length) { fe.hidden = false; fe.textContent = "After saving, these do not match: " + wrong.join("; ") + ". Press Save again."; status("Check the values."); }
     else if (!saved) status("Sent, but no confirmation of the save. Press Read again to check.");
     else status("Saved to the tracker and checked: every value reads back as sent.");

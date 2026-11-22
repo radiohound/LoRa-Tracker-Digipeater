@@ -432,7 +432,9 @@ show   get NAME   help   defaults   beacon   horus   reboot [force]   exit
 `tools/setup.html` does the same from a browser (Chrome or Edge, Web Serial, no terminal program): connect, read, change
 the settings in a form, save, and check that every value reads back as sent. It also updates the firmware over the USB
 cable. **Open it here: https://radiohound.github.io/LoRa-Tracker-Digipeater/tools/setup.html** (GitHub Pages, serving the `main`
-branch of this repository), or open `tools/setup.html` as a saved file. Close any program that
+branch of this repository), or open `tools/setup.html` as a saved file. The page shows the basic settings first (callsign, SSID,
+comment and map symbol with its icon, how often to beacon, the "also transmit on the other SF" box, and the main Horus settings); the rest sits behind **Advanced
+settings**, which opens by itself when a value in it is refused. Saving covers every setting, open or not. Close any program that
 has the serial port open first (a terminal, `pio device monitor`): two readers split the bytes. If the tracker does not answer, press
 Reset and Connect within 3 seconds.
 
