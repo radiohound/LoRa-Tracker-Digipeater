@@ -48,7 +48,7 @@ function makeEnv(sim, lossRate) {
   const navigator = { serial: { requestPort: async () => port } };
   const ctx = { document, navigator, Option, TextDecoder, TextEncoder, setTimeout, clearTimeout, console, Promise, Uint8Array, crypto: {}, fetch: undefined, JSON, Number, Object, Math, Date };
   vm.createContext(ctx);
-  vm.runInContext(script + "\n;globalThis.__api = { get settings() { return settings; }, readSettings, save, wantedPairs, dualLabel };", ctx);
+  vm.runInContext(script + "\n;globalThis.__api = { get settings() { return settings; }, readSettings, save, wantedPairs, dualLabel, symbolPreview };", ctx);
   return { els, created, document, ctx, api: ctx.__api };
 }
 
@@ -72,6 +72,18 @@ async function session(lossRate, label, call) {
   field("sf").value = "7";  api.dualLabel(); CHECK(dualName() === "Also transmit on SF12" && !field("dual_sf").disabled, label + ": dual_sf named SF12 when the main SF is 7");
   field("sf").value = "9";  api.dualLabel(); CHECK(dualName() === "Also transmit on the other SF" && field("dual_sf").disabled, label + ": dual_sf off for SF9");
   field("sf").value = "12"; api.dualLabel();
+
+  // the APRS symbol preview: which cell of which sheet the table and code make (cell = ord(c) - 33, 16 per row, 48 px)
+  const box = created.find(e => e.className === "sym");
+  CHECK(!!box, label + ": symbol preview built");
+  const setSym = (t, c) => { field("sym_table").value = t; field("sym_code").value = c; api.symbolPreview(); };
+  setSym("/", "O"); CHECK(box.style.backgroundImage.includes("24-0@2x") && box.style.backgroundPosition === "-672px -96px", label + ": / O is the balloon cell (" + box.style.backgroundPosition + ")");
+  setSym("/", "0"); CHECK(box.style.backgroundImage.includes("24-0@2x") && box.style.backgroundPosition === "-720px -0px", label + ": / 0 is a different cell from / O (" + box.style.backgroundPosition + ")");
+  setSym("\\", "#"); CHECK(box.style.backgroundImage.includes("24-1@2x") && !box.style.backgroundImage.includes("24-2@2x") && box.style.backgroundPosition === "-96px -0px", label + ": the alternate table uses sheet 1");
+  setSym("L", "#"); CHECK(box.style.backgroundImage.startsWith('url("aprs-symbols/aprs-symbols-24-2@2x.png")') && box.style.backgroundImage.includes("24-1@2x") && box.style.backgroundPosition === "-528px -96px, -96px -0px", label + ": an overlay letter is drawn on top (" + box.style.backgroundPosition + ")");
+  setSym("/", ""); CHECK(box.style.backgroundImage === "none", label + ": no code, no picture");
+  setSym("%", "O"); CHECK(box.style.backgroundImage === "none", label + ": a table that is not / or \\ or an overlay gives no picture");
+  setSym("/", "O");
 
   // change a few settings (one of them a radio setting) and save
   field("call").value = "w2hab"; field("ssid").value = "11"; field("beacon_s").value = "60";

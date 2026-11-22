@@ -48,6 +48,8 @@ details { font-size: 14px; color: var(--muted); }
 .grid { display: grid; gap: 10px; margin: 10px 0; }
 .steps { margin: 6px 0; padding-left: 20px; }
 .check .desc { flex-basis: 100%; }
+.symrow { display: flex; align-items: center; gap: 12px; }
+.sym { width: 48px; height: 48px; flex: none; border: 1px solid var(--line); border-radius: 6px; background-color: #fff; background-repeat: no-repeat; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chips button { font: inherit; font-size: 13px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 999px; padding: 5px 10px; }
 .seg { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
@@ -300,14 +302,63 @@ function buildForm() {
       const sm = document.createElement("small"); sm.textContent = "  " + d;
       const dd = document.createElement("span"); dd.className = "desc"; dd.textContent = DESC[name] || "";
       lab.append(b, sm, dd, el); sec.append(lab);
+      if (name === "sym_code") sec.append(makeSymbolRow());
     }
     host.append(sec);
   }
   $("n0call").hidden = !/^N0CALL(-\d+)?$/.test(shownCall);
   $("form").hidden = false;
+  for (const n of ["sym_table", "sym_code"]) {
+    const e = document.querySelector('#groups [data-name="' + n + '"]');
+    if (e) { e.addEventListener("input", symbolPreview); e.addEventListener("change", symbolPreview); }
+  }
+  symbolPreview();
   const sfEl = document.querySelector('#groups [data-name="sf"]');
   if (sfEl) { sfEl.addEventListener("input", dualLabel); sfEl.addEventListener("change", dualLabel); }
   dualLabel();
+}
+
+// ---- the APRS symbol the table and code make, drawn from the aprs.fi sprite sheets (tools/aprs-symbols/) ----
+let symBox = null, symText = null;
+function makeSymbolRow() {
+  const row = document.createElement("div"); row.className = "symrow";
+  symBox = document.createElement("div"); symBox.className = "sym";
+  const side = document.createElement("div");
+  symText = document.createElement("span"); symText.className = "note";
+  const credit = document.createElement("span"); credit.className = "note";
+  const a = document.createElement("a"); a.href = "https://github.com/hessu/aprs-symbols"; a.textContent = "aprs.fi symbol set by OH7LZB"; a.target = "_blank"; a.rel = "noopener";
+  credit.append("Symbols: ", a);
+  side.append(symText, document.createElement("br"), credit);
+  row.append(symBox, side);
+  return row;
+}
+// Where the symbol is on the sprite sheets, or null when the table and code make no symbol.
+// Sheets are 16 columns x 6 rows of 48 px cells; a character c is cell ord(c) - 33. Sheet 0: table /, sheet 1: table \
+// (also used under an overlay), sheet 2: the overlay characters 0-9 and A-Z drawn on top.
+function symbolFor(table, code) {
+  if (code.length !== 1 || code.charCodeAt(0) < 0x21 || code.charCodeAt(0) > 0x7e) return null;
+  let sheet, overlay = null;
+  if (table === "/") sheet = 0;
+  else if (table === "\\") sheet = 1;
+  else if (/^[0-9A-Z]$/.test(table)) { sheet = 1; overlay = table; }
+  else return null;
+  const cell = ch => { const i = ch.charCodeAt(0) - 33; return { x: (i % 16) * 48, y: Math.floor(i / 16) * 48 }; };
+  return { sheet, base: cell(code), overlay: overlay ? cell(overlay) : null };
+}
+function symbolPreview() {
+  if (!symBox) return;
+  const t = document.querySelector('#groups [data-name="sym_table"]'), c = document.querySelector('#groups [data-name="sym_code"]');
+  if (!t || !c) return;
+  const s = symbolFor(t.value.trim(), c.value.trim());
+  if (!s) { symBox.style.backgroundImage = "none"; symText.textContent = "No symbol for this table and code. The table is / or \\ or a letter or digit (an overlay); the code is one character."; return; }
+  const img = n => 'url("aprs-symbols/aprs-symbols-24-' + n + '@2x.png")';
+  const layers = [];                                       // the first layer is drawn on top
+  if (s.overlay) layers.push({ img: img(2), p: s.overlay });
+  layers.push({ img: img(s.sheet), p: s.base });
+  symBox.style.backgroundImage = layers.map(l => l.img).join(", ");
+  symBox.style.backgroundPosition = layers.map(l => "-" + l.p.x + "px -" + l.p.y + "px").join(", ");
+  symBox.style.backgroundSize = layers.map(() => "768px 288px").join(", ");
+  symText.textContent = "This is the symbol other people see on a map" + (s.overlay ? " (with the overlay " + s.overlay + ")." : ".");
 }
 
 // The "also transmit on the other SF" setting is named after the SF it adds: SF7 when the main one is SF12, and so on.
