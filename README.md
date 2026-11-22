@@ -17,7 +17,7 @@ firmware by K6ATV for RF switch pinout, TCXO voltage, and radio init sequence.
 | Branch | Purpose |
 |--------|---------|
 | **`main`** | General-purpose LoRa APRS tracker and digipeater. Four operating modes: `TRACKER_ONLY`, `TRACKER_DIGI`, `DIGI_ONLY`, `DIGI_CAD`. |
-| **`balloon-digi`** | Adds `MODE_BALLOON_DIGI` — a low-power ground station digipeater that autonomously acquires and tracks a specific balloon callsign. |
+| **`low-power-ground-digi-for-balloons`** | (formerly `balloon-digi`) Adds `MODE_BALLOON_DIGI` — a super low power sleep-and-wait ground station digipeater that autonomously acquires and tracks a specific balloon callsign. |
 
 ---
 
