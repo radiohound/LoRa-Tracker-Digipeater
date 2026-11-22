@@ -13,7 +13,9 @@
 // DEBUG
 // ============================================================
 #define DEBUG_SERIAL        1
+#ifndef DEBUG_BAUD
 #define DEBUG_BAUD          115200
+#endif
 
 // ============================================================
 // OPERATING MODE
@@ -34,10 +36,33 @@
 
 // ============================================================
 // IDENTITY
+// The callsign and SSID are settings now (see SETTINGS ON THE SERIAL PORT below), not compile-time values.
 // ============================================================
-#define MY_CALLSIGN         "W2HAB"
-#define MY_SSID             11
-#define MY_COMMENT          " STM32WLE5 LoRa"
+#define MY_COMMENT          " STM32WLE5 LoRa"     // default APRS comment
+
+// ============================================================
+// KEYS (read once at power-up or reset)
+//   Held on KEY_BOOTLOADER_PIN: jump to the chip's own serial bootloader (USART2 on PA2/PA3, the USB-serial pins), so the
+//   firmware can be updated from the browser setup page (tools/setup.html) with no ST-LINK. On the E77 dev board this is Key 1.
+//   Held on KEY_DEFAULTS_PIN: put the defaults back and save them (the rescue for forgotten or bad settings). On the dev board
+//   this is the user key. Not used when CUTDOWN_ENABLED, because PA0 is then the cutdown output.
+// Keys are pulled up, a pressed key reads low. A flight board with another signal on PA1 or PA0 must set KEYS_ENABLED 0.
+// ============================================================
+#define KEYS_ENABLED        1
+#define KEY_BOOTLOADER_PIN  PA1
+#define KEY_DEFAULTS_PIN    PA0
+
+// ============================================================
+// SETTINGS ON THE SERIAL PORT (src/settings/)
+// The values in this file are the defaults. Until a callsign other than N0CALL is saved, the tracker
+// transmits nothing. Set it with:  set call W2HAB-11  then  save   (type help for everything).
+// ============================================================
+#ifndef DEFAULT_CALLSIGN
+#define DEFAULT_CALLSIGN    "N0CALL"
+#endif
+#ifndef DEFAULT_SSID
+#define DEFAULT_SSID        0
+#endif
 
 // ============================================================
 // APRS
@@ -71,7 +96,7 @@
 // ============================================================
 // BEACON
 // ============================================================
-#define BEACON_INTERVAL_S   5              // seconds between beacons
+#define BEACON_INTERVAL_S   30              // seconds between beacons
 
 // ============================================================
 // GPS
@@ -79,7 +104,9 @@
 // PA9 = SCL, PA10 = SDA (E77 MBL dev board standard wiring).
 // ============================================================
 #define GPS_I2C_CLOCK       400000          // 400 kHz fast mode
+#ifndef GPS_FIX_TIMEOUT_MS
 #define GPS_FIX_TIMEOUT_MS  120000          // 2 min max wait for fix
+#endif
 #define GPS_POWER_PIN       RADIOLIB_NC     // set to a pin if GPS has power switch
 
 // ============================================================
@@ -164,9 +191,95 @@
 // Update to match your carrier board schematic if different.
 // ============================================================
 #define RFSWITCH_PINS   {PA6, PA7, PB3, RADIOLIB_NC, RADIOLIB_NC}
+// The E77-400M22S antenna is fed from the high-power (HP) PA. With a TX_LP entry in the table,
+// RadioLib uses the low-power PA for 14 dBm and below, which is NOT connected to the antenna
+// on this module (very weak signal). Set RF_HP_PA_ONLY 1 to drop the LP entry so every
+// power level uses the HP PA (range then -9..22 dBm). Default 0 keeps the previous behaviour.
+#ifndef RF_HP_PA_ONLY
+#define RF_HP_PA_ONLY   0
+#endif
+#if RF_HP_PA_ONLY
+#define RFSWITCH_TABLE  \
+    {STM32WLx::MODE_IDLE,  {LOW,  LOW,  LOW}},  \
+    {STM32WLx::MODE_RX,    {LOW,  HIGH, LOW}},  \
+    {STM32WLx::MODE_TX_HP, {HIGH, LOW,  HIGH}}, \
+    END_OF_MODE_TABLE
+#else
 #define RFSWITCH_TABLE  \
     {STM32WLx::MODE_IDLE,  {LOW,  LOW,  LOW}},  \
     {STM32WLx::MODE_RX,    {LOW,  HIGH, LOW}},  \
     {STM32WLx::MODE_TX_LP, {HIGH, LOW,  HIGH}}, \
     {STM32WLx::MODE_TX_HP, {HIGH, LOW,  HIGH}}, \
     END_OF_MODE_TABLE
+#endif
+
+// ============================================================
+// HORUS BINARY v2 (4FSK, 100 baud) — OPTIONAL
+// Sends a Horus v2 packet from the GPS fix after each APRS beacon (tracker modes only).
+// Needs the system clock on the TCXO (HSE_SYSCLK, switched on automatically below), because
+// the core's default clock runs ~1.9% slow and the symbols would go out at ~98 baud.
+// Horus v2 needs a payload ID (HORUS_PAYLOAD_ID); 256 is the shared test ID, new IDs are no longer issued.
+// Third-party LGPL code lives in src/horus/ (see src/horus/NOTICE.md).
+// ============================================================
+#ifndef HORUS_ENABLED
+#define HORUS_ENABLED          0
+#endif
+// Horus version: 3 = callsign in the packet (no ID needed, encouraged); 2 = payload ID, deprecated and
+// new v2 IDs are no longer issued. A v3 packet that fits 32 bytes takes the same airtime as v2.
+#ifndef HORUS_VERSION
+#define HORUS_VERSION          3
+#endif
+// The v3 payload callsign is the setting horus_call; empty means the tracker callsign with its SSID (e.g. W2HAB-11).
+#ifndef HORUS_PAYLOAD_ID
+#define HORUS_PAYLOAD_ID       256              // 256..65535; request your own
+#endif
+#ifndef HORUS_FREQ_MHZ
+#define HORUS_FREQ_MHZ         431.051          // lowest tone; nominal 431.050 MHz (local Horus frequency) + 1 kHz
+                                                // 434.200 nominal (434.201 here) is the usual frequency elsewhere
+#endif
+#ifndef HORUS_TONE_SPACING_HZ
+#define HORUS_TONE_SPACING_HZ  270.0
+#endif
+#ifndef HORUS_BAUD
+#define HORUS_BAUD             100
+#endif
+#ifndef HORUS_TX_POWER_DBM
+#define HORUS_TX_POWER_DBM     20               // above 14 uses the HP PA; -9..22 needs RF_HP_PA_ONLY 1
+#endif
+// Time slots (same scheme as RS41ng): transmit only when the GPS time, counted in seconds from
+// the top of the hour, satisfies  (t - OFFSET) mod SYNC == 0.  SYNC 0 = off (send right after the beacon).
+// Payloads sharing a frequency must use the same SYNC and different OFFSETs, with the cycle long
+// enough for every packet (a Horus v2 packet takes about 3.3 s). Examples, two slots per cycle:
+//   10 s cycle: slot 1 = SYNC 10, OFFSET 0   slot 2 = SYNC 10, OFFSET 5   (an RS41ng sonde on a 10 s cycle)
+//   30 s cycle: slot 1 = SYNC 30, OFFSET 0   slot 2 = SYNC 30, OFFSET 15
+#ifndef HORUS_TIME_SYNC_SECONDS
+#define HORUS_TIME_SYNC_SECONDS         0
+#endif
+#ifndef HORUS_TIME_SYNC_OFFSET_SECONDS
+#define HORUS_TIME_SYNC_OFFSET_SECONDS  0
+#endif
+#ifndef HORUS_BEACON_DIVIDER
+#define HORUS_BEACON_DIVIDER   1                // no longer used (the rates below replace it)
+#endif
+
+// Send rates by flight phase (the phase comes from the GPS, see src/flight/flight_phase.h).
+// While ascending, LoRa APRS uses BEACON_INTERVAL_S above.
+#ifndef HORUS_ASC_INTERVAL_S
+#define HORUS_ASC_INTERVAL_S   30               // Horus while ascending (and on the bench)
+#endif
+#ifndef HORUS_DESC_INTERVAL_S
+#define HORUS_DESC_INTERVAL_S  10               // Horus while descending: receivers miss many of these
+#endif
+#ifndef HORUS_GND_INTERVAL_S
+#define HORUS_GND_INTERVAL_S   60               // Horus after landing, last good position
+#endif
+#ifndef APRS_DESC_INTERVAL_S
+#define APRS_DESC_INTERVAL_S   15
+#endif
+#ifndef APRS_GND_INTERVAL_S
+#define APRS_GND_INTERVAL_S    60
+#endif
+
+#ifndef HSE_SYSCLK
+#define HSE_SYSCLK             HORUS_ENABLED    // 1 = run the MCU from the TCXO instead of MSI
+#endif

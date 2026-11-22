@@ -20,6 +20,10 @@
 #include <STM32LowPower.h>
 #include <STM32RTC.h>
 #include "config.h"
+#include "settings/tk_glue.h"
+#if HORUS_ENABLED
+#include "horus/horus.h"
+#endif
 
 #if BMP280_ENABLED
 #include <Adafruit_BMP280.h>
@@ -77,6 +81,7 @@ struct Position {
     uint8_t minute = 0;
     uint8_t second = 0;
     bool    valid  = false;
+    uint32_t fixMs = 0;     // millis() when this fix was taken
 };
 
 static Position lastPos;
@@ -135,7 +140,7 @@ void    gpsPowerOn();
 void    gpsPowerOff();
 bool    waitForFix(uint32_t timeoutMs);
 void    sendBeacon();
-String  buildAPRSPacket();
+String  buildAPRSPacket(const char* path = nullptr, bool advance = true);
 void    processRxPacket();
 bool    processRxPacketBattery();
 void    runDiGiCAD();
@@ -172,7 +177,7 @@ void radioInit() {
     radio.setRfSwitchTable(rfswitch_pins, rfswitch_table);
 
     DBG(F("[Radio] Init LoRa... "));
-    int state = radio.begin(LORA_FREQ, LORA_BW, LORA_SF, LORA_CR);
+    int state = radio.begin(tkCfg.freq_hz / 1e6f, tkCfg.bw_hz / 1000.0f, tkCfg.sf, tkCfg.cr);
     if (state != RADIOLIB_ERR_NONE) {
         DBG(F("failed, code ")); DBGLN(state);
         while (true) delay(10);
@@ -184,15 +189,15 @@ void radioInit() {
         while (true) delay(10);
     }
 
-    if (radio.setOutputPower(LORA_TX_POWER) == RADIOLIB_ERR_INVALID_OUTPUT_POWER) {
+    if (radio.setOutputPower(tkCfg.power_dbm) == RADIOLIB_ERR_INVALID_OUTPUT_POWER) {
         DBGLN(F("[Radio] Invalid power!")); while (true) delay(10);
     }
     if (radio.setCurrentLimit(LORA_OCP_MA) == RADIOLIB_ERR_INVALID_CURRENT_LIMIT) {
         DBGLN(F("[Radio] Invalid OCP!")); while (true) delay(10);
     }
 
-    radio.setSyncWord(LORA_SYNC_WORD);
-    radio.setPreambleLength(LORA_PREAMBLE);
+    radio.setSyncWord(tkCfg.sync);
+    radio.setPreambleLength(tkCfg.preamble);
     radio.setPacketReceivedAction(onRadioRx);
     radio.setChannelScanAction(onRadioCad);
 
@@ -200,11 +205,15 @@ void radioInit() {
     DBGLN(F("OK"));
 }
 
+void tkApplyRadio()          { radioInit(); }
+void tkOnSettingsChanged()   { tks_fullcall(&tkCfg, myCallsignFull, sizeof myCallsignFull); }
+
 void radioSleep()    { radio.sleep(); radioReady = false; }
 void radioStartRx()  { radio.setPacketReceivedAction(onRadioRx); radio.startReceive(); }
 void radioStartCad() { radio.startChannelScan(); }
 
 bool radioTransmit(const String& tnc2) {
+    if (!tks_call_is_set(&tkCfg)) { DBGLN(F("[TX] callsign is N0CALL: nothing is transmitted")); return false; }
     String pkt = "<\xff\x01" + tnc2;
     DBG(F("[TX APRS] ")); DBGLN(pkt);
     int state = radio.transmit(pkt);
@@ -238,6 +247,7 @@ void gpsInit() {
     myGPS.setUART2Output(0);
     myGPS.setI2COutput(COM_TYPE_UBX);
     myGPS.setNavigationFrequency(1);
+    myGPS.setAutoPVT(true);                        // a position every second without polling
     myGPS.setDynamicModel(DYN_MODEL_AIRBORNE1g);   // essential for HAB > 12 km
     myGPS.saveConfiguration();
 
@@ -262,23 +272,38 @@ void gpsPowerOff() {
     gpsReady = false;
 }
 
+static float lastVelUpMs = 0.0f, lastGroundKmh = 0.0f;
+
+// Reads the newest GPS solution into lastPos when it has a usable fix.
+static bool gpsReadPvt() {
+    // The GPS sends a position by itself every second (setAutoPVT in gpsInit), so this never waits.
+    // Read each value once: asking for the same one twice makes the library poll the GPS again.
+    myGPS.checkUblox();
+    if (myGPS.getPVT() && myGPS.getFixType() != 0 && myGPS.getSIV() > 3) {
+        int32_t gs = myGPS.getGroundSpeed();                        // mm/s
+        lastPos.lat    = myGPS.getLatitude()    / 1e7f;
+        lastPos.lon    = myGPS.getLongitude()   / 1e7f;
+        lastPos.altM   = myGPS.getAltitudeMSL() / 1000.0f;
+        lastPos.speed  = (int)(gs / 514.44f);                       // mm/s → knots
+        lastPos.course = myGPS.getHeading() / 100000;
+        lastPos.sats   = myGPS.getSIV();
+        lastPos.hour   = myGPS.getHour();
+        lastPos.minute = myGPS.getMinute();
+        lastPos.second = myGPS.getSecond();
+        lastPos.fixMs  = millis();
+        lastPos.valid  = true;
+        lastVelUpMs    = -(float)myGPS.getNedDownVel() / 1000.0f;   // mm/s, down is positive
+        lastGroundKmh  = gs / 277.78f;                              // mm/s -> km/h
+        return true;
+    }
+    return false;
+}
+
 bool waitForFix(uint32_t timeoutMs) {
     uint32_t start = millis();
     while (millis() - start < timeoutMs) {
-        myGPS.checkUblox();
-        if (myGPS.getPVT() && myGPS.getFixType() != 0 && myGPS.getSIV() > 3) {
-            lastPos.lat    = myGPS.getLatitude()    / 1e7f;
-            lastPos.lon    = myGPS.getLongitude()   / 1e7f;
-            lastPos.altM   = myGPS.getAltitudeMSL() / 1000.0f;
-            lastPos.speed  = (int)(myGPS.getGroundSpeed() / 514.44f);  // mm/s → knots
-            lastPos.course = myGPS.getHeading() / 100000;
-            lastPos.sats   = myGPS.getSIV();
-            lastPos.hour   = myGPS.getHour();
-            lastPos.minute = myGPS.getMinute();
-            lastPos.second = myGPS.getSecond();
-            lastPos.valid  = true;
-            return true;
-        }
+        if (gpsReadPvt()) return true;
+        tkSerialPoll();
         delay(100);
     }
     DBGLN(F("[GPS] Fix timeout."));
@@ -358,7 +383,7 @@ void checkCutdown(float altM) {
 // ============================================================
 // APRS PACKET
 // ============================================================
-String buildAPRSPacket() {
+String buildAPRSPacket(const char* path, bool advance) {
 #if BMP280_ENABLED
     float altM = bmpReady ? bmp.readAltitude(bmpSeaLevelHpa) : lastPos.altM;
 #else
@@ -368,22 +393,97 @@ String buildAPRSPacket() {
     String gpsData = APRSPacketLib::encodeGPSIntoBase91(
         lastPos.lat, lastPos.lon,
         lastPos.course, lastPos.speed,
-        String(APRS_SYMBOL_CODE),
+        String(tkCfg.sym_code),
         true, (int)(altM * 3.28084f));
+
+    // comment2 is added after the normal comment on every comment2_every-th beacon (0 = never)
+    // (advance = false builds the same beacon again, e.g. for the second SF, without counting it twice)
+    static uint32_t beaconCount = 0;
+    static bool extra = false;
+    if (advance) {
+        beaconCount++;
+        extra = tkCfg.comment2_every > 0 && tkCfg.comment2[0] && beaconCount % tkCfg.comment2_every == 0;
+    }
+    String comment = tkCfg.comment[0] ? String(" ") + tkCfg.comment : String();
+    if (extra) comment += String(" ") + tkCfg.comment2;
 
     return APRSPacketLib::generateBase91GPSBeaconPacket(
         String(myCallsignFull),
-        String(APRS_DESTINATION),
-        String(BEACON_PATH),
-        String(APRS_SYMBOL_TABLE),
-        gpsData) + MY_COMMENT;
+        String(tkCfg.tocall),
+        String(path ? path : tkCfg.path),
+        String(tkCfg.sym_table),
+        gpsData) + comment;
+}
+
+// ============================================================
+// HORUS BINARY v2 — after the APRS beacon (optional)
+// Uses the fix sendBeacon() just took. HORUS_FAKE_FIX is for bench tests without a GPS.
+// ============================================================
+#if HORUS_ENABLED
+static HorusFix horusFixFromLastPos() {
+    HorusFix f = {};
+#ifdef HORUS_FAKE_FIX
+    f.valid = true;  f.lat = 37.0058f; f.lon = -121.5683f; f.altM = 100; f.sats = 8;
+    f.hour = 12; f.minute = 34; f.second = 56;               // fixed test time, not real UTC
+    f.fixMs = millis();
+#else
+    f.valid = lastPos.valid;
+    f.lat = lastPos.lat; f.lon = lastPos.lon;
+#if BMP280_ENABLED
+    f.altM = bmpReady ? bmp.readAltitude(bmpSeaLevelHpa) : lastPos.altM;
+#else
+    f.altM = lastPos.altM;
+#endif
+    f.sats = lastPos.sats;
+    f.hour = lastPos.hour; f.minute = lastPos.minute; f.second = lastPos.second;
+    f.fixMs = lastPos.fixMs;
+#endif
+    f.speedKmh = lastPos.speed * 1.852f;                      // knots -> km/h
+#if BMP280_ENABLED
+    if (bmpReady) { f.hasTemp = true; f.tempC = bmp.readTemperature(); }
+#endif
+    return f;
+}
+
+static bool horusEnabledNow() { return tkCfg.horus && tks_horus_call_is_set(&tkCfg); }   // Horus has its own callsign check
+
+// Tracker-only mode: one Horus packet after each beacon (every Nth one, see horus_div).
+static void horusAfterBeacon() {
+    HorusFix f = horusFixFromLastPos();
+    if (!horusEnabledNow()) return;
+    DBGLN(F("[Horus] TX"));
+    bool force = tkHorusNow; tkHorusNow = false;
+    if (force ? horusSend(f) : horusSendDivided(f)) { DBG(F("[Horus] sent #")); DBGLN(horusSequence()); }
+    radioReady = false;                                       // radio is in FSK mode now
+}
+#endif
+
+// ============================================================
+// The "also transmit on the other SF" checkbox (dual_sf): the other common spreading factor
+// is SF7 when the main one is SF12, and SF12 when the main one is SF7. Any other main SF: none.
+// ============================================================
+static uint8_t otherSf() { return tkCfg.sf == 12 ? 7 : tkCfg.sf == 7 ? 12 : 0; }
+
+// Sends the beacon and, if dual_sf is on, the same position again on the other SF. The second
+// copy has no digipeater path, so it is heard and gated but not repeated across a wide area.
+static void sendAprsBeaconPackets() {
+    radioTransmit(buildAPRSPacket());
+    uint8_t sf2 = otherSf();
+    if (tkCfg.dual_sf && sf2) {
+        radio.standby();
+        if (radio.setSpreadingFactor(sf2) == RADIOLIB_ERR_NONE) {
+            DBG(F("[TX APRS SF")); DBG(sf2); DBGLN(F("]"));
+            radioTransmit(buildAPRSPacket("", false));
+        }
+        radioReady = false;                      // start over from the normal settings before listening or the next beacon
+    }
 }
 
 // ============================================================
 // SEND BEACON
 // ============================================================
 void sendBeacon() {
-    bool haveFix = waitForFix(GPS_FIX_TIMEOUT_MS);
+    bool haveFix = waitForFix((uint32_t)tkCfg.gps_timeout_s * 1000UL);
     bool havePos = haveFix || lastPos.valid;
 
     if (!havePos) {
@@ -407,8 +507,8 @@ void sendBeacon() {
     }
 #endif
 
-    if (havePos) {
-        radioTransmit(buildAPRSPacket());
+    if (havePos && tkCfg.aprs) {
+        sendAprsBeaconPackets();
     }
 }
 
@@ -786,13 +886,14 @@ void enterDeepSleep(uint32_t ms) {
 // SETUP
 // ============================================================
 void setup() {
+    tkKeysAtBoot();                                     // Key 1 held = bootloader, user key = defaults
 #if DEBUG_SERIAL
     Serial.begin(DEBUG_BAUD);
     delay(500);
 #endif
     DBGLN(F("=== LoRa APRS Tracker ==="));
 
-    snprintf(myCallsignFull, sizeof(myCallsignFull), "%s-%d", MY_CALLSIGN, MY_SSID);
+    tkSettingsBegin();                                  // settings from flash (or the defaults in config.h), callsign
 
     LowPower.begin();
     rtc.begin();
@@ -811,10 +912,145 @@ void setup() {
 
     radioInit();
 
+    tkBootWindow(3000);                                 // a key within 3 s opens the setup command line
+
 #if OPERATING_MODE == MODE_DIGI_ONLY
     radioStartRx();
 #endif
 }
+
+// ============================================================
+// TRACKER + DIGI SCHEDULER
+// LoRa APRS and Horus each have their own rate for each flight phase (ascent, descent, landed).
+// The GPS stays on, is read once a second, and drives the phase (src/flight/flight_phase.h).
+// While nothing is due the radio listens, so the board still digipeats.
+// ============================================================
+#if OPERATING_MODE == MODE_TRACKER_DIGI
+#include "flight/flight_phase.h"
+
+static fp_state_t flight;
+static uint32_t   nextAprsMs = 0, lastAprsMs = 0, nextHorusMs = 0;
+static uint32_t   lastGpsPollMs = 0, lastFixAtMs = 0, lastWaitMsgMs = 0;
+static bool       schedInit = false, firstFixDone = false;
+
+static uint32_t aprsIntervalMs() {
+    uint16_t s = flight.phase == FP_DESCENT ? tkCfg.aprs_desc_s : flight.phase == FP_LANDED ? tkCfg.aprs_gnd_s : tkCfg.beacon_s;
+    return (uint32_t)s * 1000UL;
+}
+#if HORUS_ENABLED
+static uint32_t horusIntervalMs() {
+    uint16_t s = flight.phase == FP_DESCENT ? tkCfg.horus_desc_s : flight.phase == FP_LANDED ? tkCfg.horus_gnd_s : tkCfg.horus_asc_s;
+    return (uint32_t)s * 1000UL;
+}
+#endif
+static bool due(uint32_t now, uint32_t at) { return (int32_t)(now - at) >= 0; }
+
+// Reads the GPS (at most once a second, unless force) and updates the flight phase.
+static void gpsPollAndPhase(bool force) {
+    uint32_t now = millis();
+    if (!force && now - lastGpsPollMs < 1000) return;
+    lastGpsPollMs = now;
+    if (!gpsReadPvt()) return;
+    uint32_t dt = lastFixAtMs ? now - lastFixAtMs : 1000;
+    lastFixAtMs = now;
+    fp_phase_t before = flight.phase;
+    fp_update(&flight, lastPos.altM, lastVelUpMs, lastGroundKmh, dt);
+    if (flight.phase != before) {
+        DBG(F("[Flight] ")); DBGLN(fp_name(flight.phase));
+        // the new phase may have a shorter interval: pull the next sends forward (never push them back)
+        uint32_t a = lastAprsMs + aprsIntervalMs();
+        if (due(nextAprsMs, a)) nextAprsMs = a;
+#if HORUS_ENABLED
+        uint32_t h = horusLastTxStartMs() + horusIntervalMs();
+        if (due(nextHorusMs, h)) nextHorusMs = h;
+#endif
+    }
+}
+
+static void backToLoraRx() {
+    if (!radioReady) radioInit();
+    radioRxFlag = false;
+    radioStartRx();
+}
+
+static void runTrackerScheduler() {
+    if (!schedInit) {
+        schedInit = true;
+        fp_init(&flight);
+        gpsInit();
+        lastAprsMs = millis();
+        nextAprsMs = nextHorusMs = millis();
+        backToLoraRx();
+    }
+    if (!gpsReady) { static uint32_t retry = 0; if (millis() - retry > 10000) { retry = millis(); gpsInit(); } }
+    if (gpsReady) gpsPollAndPhase(false);
+
+    uint32_t now = millis();
+#if HORUS_ENABLED
+    const uint32_t LEAD_MS = 1500;              // start early so the wait for the time slot is short and the fix is fresh
+    bool horusOn  = horusEnabledNow();
+    bool horusDue = tkHorusNow || (horusOn && due(now + LEAD_MS, nextHorusMs));
+#else
+    bool horusDue = false;
+#endif
+    bool aprsDue = tkBeaconNow || due(now, nextAprsMs);
+#if HORUS_ENABLED
+    // a Horus slot is coming: let it go first, LoRa APRS follows right after
+    if (aprsDue && !tkBeaconNow && horusOn && !horusDue && (int32_t)(nextHorusMs - now) < 6000) aprsDue = false;
+#endif
+
+    if (!lastPos.valid && (horusDue || aprsDue)) {
+        if (now - lastWaitMsgMs > 10000) { lastWaitMsgMs = now; DBGLN(F("[GPS] waiting for a first fix")); }
+        horusDue = aprsDue = false;
+    }
+
+#if HORUS_ENABLED
+    if (horusDue) {
+        gpsPollAndPhase(true);                  // freshest position before the slot
+        HorusFix f = horusFixFromLastPos();
+        DBGLN(F("[Horus] TX"));
+        tkHorusNow = false;
+        bool sent = horusSend(f);
+        if (sent) { DBG(F("[Horus] sent #")); DBGLN(horusSequence()); }
+        radioReady = false;                     // the radio is in FSK mode now
+        nextHorusMs = (sent ? horusLastTxStartMs() : millis()) + horusIntervalMs();
+        backToLoraRx();
+        return;
+    }
+#endif
+    if (aprsDue) {
+        uint32_t startMs = millis();            // the interval counts from the start of the beacon, not its end
+        gpsPollAndPhase(true);
+        tkBeaconNow = false;
+        if (!firstFixDone) {
+            firstFixDone = true;
+#if BMP280_ENABLED
+            if (bmpReady) calibrateBmpFromGPS(BMP280_CAL_SAMPLES);
+#endif
+        }
+#if CUTDOWN_ENABLED
+        if (lastPos.valid) {
+#if BMP280_ENABLED
+            float altM = bmpReady ? bmp.readAltitude(bmpSeaLevelHpa) : lastPos.altM;
+#else
+            float altM = lastPos.altM;
+#endif
+            checkCutdown(altM);
+        }
+#endif
+        if (tkCfg.aprs && lastPos.valid) { if (!radioReady) radioInit(); radio.standby(); sendAprsBeaconPackets(); }
+        lastAprsMs = startMs;
+        nextAprsMs = startMs + aprsIntervalMs();
+        backToLoraRx();
+        return;
+    }
+
+    tkSerialPoll();
+    if (radioRxFlag) { radioRxFlag = false; processRxPacket(); }
+    flushDigiQueue();
+    delay(10);
+}
+#endif
 
 // ============================================================
 // LOOP
@@ -825,25 +1061,18 @@ void loop() {
     if (!radioReady) radioInit();
     if (!gpsReady)   gpsInit();
     sendBeacon();
+#if HORUS_ENABLED
+    horusAfterBeacon();
+#endif
     gpsPowerOff();
     radioSleep();
-    enterDeepSleep((uint32_t)BEACON_INTERVAL_S * 1000UL);
+    enterDeepSleep((uint32_t)tkCfg.beacon_s * 1000UL);
 
 #elif OPERATING_MODE == MODE_TRACKER_DIGI
-    if (!gpsReady) gpsInit();
-    sendBeacon();
-    gpsPowerOff();
-    radioInit();
-    radioRxFlag = false;
-    radioStartRx();
-    uint32_t end = millis() + (uint32_t)BEACON_INTERVAL_S * 1000UL;
-    while (millis() < end) {
-        if (radioRxFlag) { radioRxFlag = false; processRxPacket(); }
-        flushDigiQueue();
-        delay(10);
-    }
+    runTrackerScheduler();
 
 #elif OPERATING_MODE == MODE_DIGI_ONLY
+    tkSerialPoll();
     if (radioRxFlag) { radioRxFlag = false; processRxPacket(); }
     flushDigiQueue();
     LowPower.idle(10);

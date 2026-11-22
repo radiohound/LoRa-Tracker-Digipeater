@@ -1,0 +1,571 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>LoRa APRS + Horus Tracker Setup</title>
+<!--
+  Sets up the STM32WLE5 LoRa APRS + Horus tracker from the browser, over its USB-serial port, with no terminal program.
+  It types the same commands you would (show, set, save), using Web Serial: Chrome, Edge or another Chromium browser, on a
+  page served over https:// (GitHub Pages) or opened from a file. Nothing leaves this page.
+  Based on the setup page of radiohound/lora-aprs-digi.
+-->
+<style>
+:root {
+  --bg: #f4f6f5; --panel: #ffffff; --ink: #16201e; --muted: #5b6a67; --line: #d4dcd9; --accent: #0d6e63; --accent-ink: #ffffff;
+  --warn: #9a4d00; --bad: #b3261e; --code-bg: #e9efed;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #111816; --panel: #19221f; --ink: #e3ebe8; --muted: #9aaaa6; --line: #2d3a37; --accent: #3fbfae; --accent-ink: #062320;
+          --warn: #f0a24a; --bad: #ff8a80; --code-bg: #0c1312; color-scheme: dark; }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--ink); }
+body { font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; padding: max(14px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) 32px max(16px, env(safe-area-inset-left)); }
+main { max-width: 600px; margin: 0 auto; display: grid; gap: 14px; }
+h1 { font-size: 22px; margin: 4px 0 0; }
+.sub { color: var(--muted); margin: 0; font-size: 14px; }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; display: grid; gap: 12px; }
+label { display: grid; gap: 4px; font-size: 14px; color: var(--muted); }
+input, select { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 9px 10px; width: 100%; }
+input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: start; }
+.row > * { flex: 1 1 120px; }
+button { font: inherit; border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; background: var(--bg); color: var(--ink); cursor: pointer; }
+button.main { font-weight: 600; border: 0; background: var(--accent); color: var(--accent-ink); }
+button:disabled { opacity: .45; cursor: default; }
+.note { font-size: 13px; color: var(--muted); margin: 0; }
+.err { color: var(--bad); font-size: 14px; margin: 0; }
+.warn { color: var(--warn); font-size: 14px; margin: 0; }
+.check { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; color: var(--ink); font-size: 14px; }
+.check input { width: auto; }
+.status { font-size: 14px; }
+.id { background: var(--code-bg); border-radius: 6px; padding: 10px; overflow-wrap: anywhere; user-select: all; }
+pre { margin: 0; background: var(--code-bg); border-radius: 6px; padding: 10px; font-size: 12px; max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+details { font-size: 14px; color: var(--muted); }
+.grid { display: grid; gap: 10px; margin: 10px 0; }
+.steps { margin: 6px 0; padding-left: 20px; }
+.check .desc { flex-basis: 100%; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chips button { font: inherit; font-size: 13px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 999px; padding: 5px 10px; }
+.seg { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg button { flex: 1; border: 0; border-radius: 0; background: var(--bg); color: var(--muted); padding: 8px; font-size: 14px; }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+.desc { display: block; font-size: 13px; color: var(--muted); line-height: 1.4; }
+.grid label small { color: var(--muted); font-size: 12px; }
+.grid label b { font-weight: 600; color: var(--ink); font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 13px; }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <div>
+    <h1>LoRa APRS + Horus Tracker Setup</h1>
+    <p class="sub">Connect the tracker with its USB-serial cable, read its settings, change them and save. Nothing leaves this page.</p>
+  </div>
+
+  <section>
+    <div class="row">
+      <button class="main" id="connect">Connect</button>
+      <button id="disconnect" disabled>Disconnect</button>
+    </div>
+    <p class="status" id="status">Not connected.</p>
+    <p class="err" id="nosupport" hidden>This browser has no Web Serial. Use Chrome or Edge on a computer (not a phone), and open this page over https or from a saved file.</p>
+    <p class="note">The tracker listens for commands while it waits for a GPS fix, in its receive window, and in setup mode. If it does not answer, <b>press Reset on the board and press Connect within 3 seconds</b>: the page sends a key, which opens setup mode. A program that already has the serial port open (a terminal, <span class="mono">pio device monitor</span>) must be closed first.</p>
+  </section>
+
+  <section id="form" hidden>
+    <p class="warn" id="n0call" hidden>The callsign is still N0CALL: no LoRa APRS is sent until you set one.</p>
+    <div id="groups"></div>
+    <p class="err" id="formerr" hidden></p>
+    <div class="row">
+      <button class="main" id="save">Save to the tracker</button>
+      <button id="reread">Read again</button>
+    </div>
+    <details>
+      <summary>Actions</summary>
+      <div class="row" style="margin-top:8px">
+        <button id="actbeacon">Send a beacon cycle now</button>
+        <button id="acthorus">Send a Horus packet now</button>
+        <button id="actrun">Leave setup mode (start running)</button>
+      </div>
+      <p class="note">A beacon cycle waits for a GPS fix first (up to the GPS timeout). Setup mode, if you are in it, holds the tracker until you leave it or restart.</p>
+    </details>
+  </section>
+
+  <section id="flashbox">
+    <details>
+      <summary>Update the firmware (USB cable)</summary>
+      <ol class="note steps">
+        <li>Choose the firmware below (or your own <span class="mono">.bin</span>).</li>
+        <li>Connect first if you can: the page then puts the tracker into its bootloader for you. Otherwise hold <b>Key 1</b> (the middle button) and tap <b>Reset</b>, and keep holding Key 1 for about a second.</li>
+        <li>Press <b>Flash firmware</b> and pick the board's USB port. It takes about half a minute.</li>
+      </ol>
+      <p class="note" id="fwinfo">Looking for the firmware that comes with this page...</p>
+      <label>Firmware that comes with this page<select id="fwpick" hidden></select></label>
+      <label>Or flash a different .bin file<input type="file" id="fwfile" accept=".bin"></label>
+      <progress id="fwprog" max="100" value="0" hidden style="width:100%"></progress>
+      <div class="row"><button class="main" id="flashbtn" disabled>Flash firmware</button></div>
+      <p class="status" id="flashstatus"></p>
+      <pre id="flashlog" class="mono" hidden></pre>
+      <p class="note">Only the program area is rewritten, so your saved settings are kept. This needs a board that already runs this firmware (it has the key and the command that open the bootloader). A new board or one that will not start needs an ST-LINK V2 once.</p>
+    </details>
+  </section>
+
+  <section>
+    <details>
+      <summary>Serial log</summary>
+      <div class="row"><button id="clearlog">Clear</button></div>
+      <pre id="log" class="mono"></pre>
+    </details>
+  </section>
+</main>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+let port = null, reader = null, writer = null, buf = "", waiters = [], settings = {}, shownCall = "", meta = {}, orig = {};
+
+const logEl = $("log");
+function logLine(s) { logEl.textContent += s + "\n"; logEl.scrollTop = logEl.scrollHeight; if (logEl.textContent.length > 20000) logEl.textContent = logEl.textContent.slice(-10000); }
+function status(s) { $("status").textContent = s; }
+
+// Reads lines from the port; every complete line goes to the log and to whoever is waiting for it.
+async function pump() {
+  const dec = new TextDecoder();
+  try {
+    while (port && port.readable) {
+      reader = port.readable.getReader();
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let i;
+          while ((i = buf.search(/\r\n|\n|\r/)) >= 0) {
+            const line = buf.slice(0, i); buf = buf.slice(i).replace(/^(\r\n|\n|\r)/, "");
+            if (line) { logLine(line); waiters.slice().forEach(w => w(line)); }
+          }
+        }
+      } finally { reader.releaseLock(); reader = null; }
+    }
+  } catch (e) { logLine("[read error] " + e.message); }
+  if (port) disconnected();
+}
+
+async function send(text) { await writer.write(new TextEncoder().encode(text + "\n")); }
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// Sends one command and collects the lines that come back until the line "stop" matches, or the time runs out.
+function ask(cmd, stop, ms) {
+  return new Promise(async resolve => {
+    const got = [];
+    const w = line => { got.push(line); if (stop(line)) done(); };
+    const t = setTimeout(done, ms || 2500);
+    function done() { clearTimeout(t); waiters = waiters.filter(x => x !== w); resolve(got); }
+    waiters.push(w);
+    try { await send(cmd); } catch (e) { done(); }
+  });
+}
+
+
+// ---- reading the settings: "show" for the values, "help" for what kind of value each one takes ----
+const END = l => l.startsWith("* =");                       // the last line of show and help
+function parseShow(lines) {
+  const out = {}; let call = "";
+  for (const l of lines) {
+    let m = /^callsign (\S+)/.exec(l); if (m) { call = m[1]; continue; }
+    m = /^([a-z_0-9]+) = (.*?)( \*)?$/.exec(l); if (m) out[m[1]] = m[2];
+  }
+  return { values: out, call };
+}
+// Characters are very occasionally lost on a serial line, so one read is not trusted: "show" is read several times and a
+// value counts when at least two reads agree on it, for every setting the form knows.
+async function readStable() {
+  const votes = {}; let agreed = {};
+  const wanted = GROUPS.flatMap(g => g[1]);
+  for (let i = 0; i < 8; i++) {
+    const cur = parseShow(await ask("show", END, 3500));
+    for (const [k, v] of Object.entries(cur.values)) { votes[k] = votes[k] || {}; votes[k][v] = (votes[k][v] || 0) + 1; }
+    agreed = {};
+    for (const k of Object.keys(votes)) {
+      const best = Object.entries(votes[k]).sort((x, y) => y[1] - x[1])[0];
+      if (best[1] >= 2) agreed[k] = best[0];
+    }
+    if (wanted.every(n => n in agreed)) break;
+    await sleep(100);
+  }
+  const ss = Number((agreed.ssid || "0").split(" ")[0]);
+  return { values: agreed, call: agreed.call ? agreed.call + (ss ? "-" + ss : "") : "" };
+}
+
+// "help" says what kind of value each setting takes. Read the same way as "show": a line counts when two reads agree.
+async function readHelp() {
+  const votes = {}, wanted = GROUPS.flatMap(g => g[1]); let agreed = {};
+  for (let i = 0; i < 8; i++) {
+    const lines = await ask("help", END, 3500);
+    for (const l of lines) {
+      const m = /^([* ]) ([a-z_0-9]+)\s+(.+)$/.exec(l);
+      if (!m || !(m[2] in settings)) continue;
+      const v = m[1] + "|" + m[3].trim();
+      votes[m[2]] = votes[m[2]] || {}; votes[m[2]][v] = (votes[m[2]][v] || 0) + 1;
+    }
+    agreed = {};
+    for (const k of Object.keys(votes)) {
+      const best = Object.entries(votes[k]).sort((x, y) => y[1] - x[1])[0];
+      if (best[1] >= 2) { const j = best[0].indexOf("|"); agreed[k] = { radio: best[0].slice(0, j) === "*", desc: best[0].slice(j + 1) }; }
+    }
+    if (wanted.every(n => n in agreed)) break;
+    await sleep(100);
+  }
+  return agreed;
+}
+
+async function readSettings() {
+  status("Reading the settings...");
+  const r = await readStable();
+  settings = r.values; shownCall = r.call;
+  if (!("call" in settings)) { status("Connected, but the tracker did not answer. Is it the right port (115200 baud)? Press Reset and Connect again within 3 seconds."); return false; }
+  meta = await readHelp();
+  buildForm();
+  status("Connected. " + (shownCall ? "Callsign " + shownCall + ". " : "") + "Settings read.");
+  return true;
+}
+
+// ---- what each setting does, in plain words; the ranges come from the tracker itself (see buildForm) ----
+const GROUPS = [
+  ["LoRa APRS beacon", ["call", "ssid", "comment", "sym_table", "sym_code", "path", "tocall", "comment2", "comment2_every", "aprs", "dual_sf", "gps_timeout"]],
+  ["How often to send, by flight phase (the GPS decides the phase: ascent, descent, landed)", ["beacon_s", "aprs_desc", "aprs_gnd", "horus_asc", "horus_desc", "horus_gnd"]],
+  ["LoRa radio (APRS). These need the radio restarted: the page does that when you save.", ["freq", "bw", "sf", "cr", "power", "sync", "preamble"]],
+  ["Horus Binary (4FSK telemetry)", ["horus", "horus_ver", "horus_call", "horus_note", "horus_id", "horus_freq", "horus_power", "horus_sync", "horus_off"]],
+];
+const DESC = {
+  call: "Your callsign without the SSID. Until it is set to something other than N0CALL the tracker sends no LoRa APRS.",
+  ssid: "The SSID, 0 to 99 (0 = none). The callsign above and this make the APRS source, e.g. W2HAB-11.",
+  comment: "Text added to each APRS beacon after the position.",
+  sym_table: "APRS symbol table: / (primary) or \\ (alternate).",
+  sym_code: "APRS symbol: O is a balloon, > a car, k a truck.",
+  path: "Digipeater path of the beacon, e.g. WIDE1-1. Empty for none.",
+  tocall: "The APRS destination (tocall) this software uses. Leave it unless you have your own.",
+  dual_sf: "(setting name dual_sf) Sends every LoRa APRS beacon a second time on the other common spreading factor: SF7 when the main one is SF12, SF12 when it is SF7. Useful to see whether SF7 receivers hear you, or for chasers listening on SF7. The extra copy is only about 0.1 s of airtime at SF7, and it has no digipeater path, so it is heard and gated but not repeated. It does nothing, and is greyed out, for any other main SF. The board keeps listening on the main SF only.",
+  comment2: "LoRa APRS: extra text added after the comment above on some beacons (see the next setting). For something that does not need to go out every time, like a contact note.",
+  comment2_every: "Add the extra text on every Nth beacon: 1 = every beacon, 3 = every third one, 0 = never.",
+  beacon_s: "LoRa APRS: seconds between beacons while ascending (also on the bench, before any flight).",
+  aprs_desc: "LoRa APRS: seconds between beacons while descending. Shorter is better here: receivers miss many packets on the way down.",
+  aprs_gnd: "LoRa APRS: seconds between beacons after landing. The last good position is repeated.",
+  horus_asc: "Horus: seconds between packets while ascending (also on the bench). Best a multiple of the time-slot cycle below.",
+  horus_desc: "Horus: seconds between packets while descending.",
+  horus_gnd: "Horus: seconds between packets after landing, with the last good position.",
+  aprs: "Send the LoRa APRS beacon. Turn off to fly with Horus only.",
+  gps_timeout: "Longest wait for a GPS fix each cycle, in seconds.",
+  freq: "LoRa APRS frequency in MHz. 433.775 is the usual one.",
+  bw: "LoRa bandwidth in kHz. 125 for LoRa APRS.",
+  sf: "LoRa spreading factor. 12 for long range; slower.",
+  cr: "LoRa coding rate. 4/5 for LoRa APRS.",
+  power: "Transmit power in dBm. At 14 or below the E77-400M22S low-power amplifier is used, which is not connected to the antenna on that module: use 15 to 22 there.",
+  sync: "LoRa sync word, in hex. 0x12 for LoRa APRS.",
+  preamble: "LoRa preamble length in symbols. 8 is usual.",
+  horus: "Send Horus Binary packets after each beacon cycle. Needs a firmware built with Horus.",
+  horus_ver: "3 puts the callsign in the packet and needs no ID (recommended). 2 uses a payload ID; new v2 IDs are no longer issued.",
+  horus_call: "The Horus v3 payload callsign. Empty means the callsign above with its SSID. It can be different from the APRS callsign. Letters, digits, - and /, up to 15 characters, upper and lower case count.",
+  horus_note: "A short text sent in every Horus v3 packet (up to 30 characters: letters, digits, space and _ + / = - .). It makes each packet longer, so it takes longer on the air (a 48- or 64-byte frame instead of 32). Empty = none. Not used by version 2. How receivers show it varies.",
+  horus_id: "Horus v2 payload ID, 256 to 65535. Only used with version 2. 256 is the shared test ID.",
+  horus_freq: "The lowest of the four Horus tones, in MHz. Put it 1 kHz above the frequency you announce, so receivers tuned to that frequency (USB) hear the tones: 431.051 for 431.050.",
+  horus_power: "Horus transmit power in dBm. At 14 or below the low-power amplifier is used (see power above): use 15 to 22 unless the firmware was built for the high-power amplifier only.",
+  horus_sync: "Time slots, as RS41ng does: the cycle length in seconds. A packet is sent when the GPS time, counted from the top of the hour, is a whole number of cycles plus the offset. 0 = no slots, send as soon as the interval is up.",
+  horus_off: "The offset inside the cycle, in seconds, below the cycle length. Two payloads sharing a frequency: the same cycle (e.g. 10) and different offsets (0 and 5).",
+};
+const BW = ["7.8", "10.4", "15.6", "20.8", "31.25", "41.7", "62.5", "125", "250", "500"];
+const CR = ["4/5", "4/6", "4/7", "4/8"];
+const RADIO = ["freq", "bw", "sf", "cr", "power", "sync", "preamble"];     // these need "apply" before they take effect
+
+function buildForm() {
+  const host = $("groups"); host.textContent = ""; orig = {};
+  for (const [title, names] of GROUPS) {
+    const sec = document.createElement("div"); sec.className = "grid";
+    const h = document.createElement("b"); h.textContent = title; sec.append(h);
+    for (const name of names) {
+      const m = meta[name], raw = settings[name]; if (!m || raw === undefined) continue;
+      const d = m.desc; let el, val;
+      if (d === "on or off") { el = document.createElement("select"); ["on", "off"].forEach(o => el.add(new Option(o, o))); val = raw; }
+      else if (name === "bw") { el = document.createElement("select"); val = raw.split(" ")[0]; (BW.includes(val) ? BW : BW.concat(val)).forEach(o => el.add(new Option(o + " kHz", o))); }
+      else if (name === "cr") { el = document.createElement("select"); val = raw.split(" ")[0]; CR.forEach(o => el.add(new Option(o, o))); }
+      else if (name === "horus_ver") { el = document.createElement("select"); val = raw.split(" ")[0]; [["3", "3: callsign in the packet"], ["2", "2: payload ID (deprecated)"]].forEach(([v, t]) => el.add(new Option(t, v))); }
+      else if (d.startsWith("text")) { el = document.createElement("input"); val = raw === "-" ? "" : raw; el.placeholder = "empty"; if (name === "call") { el.autocapitalize = "characters"; el.maxLength = 6; } }
+      else { el = document.createElement("input"); val = raw.split(" ")[0]; }
+      el.value = val; orig[name] = val; el.dataset.name = name; el.className = "mono";
+      const lab = document.createElement("label");
+      const b = document.createElement("b"); b.textContent = name;
+      const sm = document.createElement("small"); sm.textContent = "  " + d;
+      const dd = document.createElement("span"); dd.className = "desc"; dd.textContent = DESC[name] || "";
+      lab.append(b, sm, dd, el); sec.append(lab);
+    }
+    host.append(sec);
+  }
+  $("n0call").hidden = !/^N0CALL(-\d+)?$/.test(shownCall);
+  $("form").hidden = false;
+  const sfEl = document.querySelector('#groups [data-name="sf"]');
+  if (sfEl) { sfEl.addEventListener("input", dualLabel); sfEl.addEventListener("change", dualLabel); }
+  dualLabel();
+}
+
+// The "also transmit on the other SF" setting is named after the SF it adds: SF7 when the main one is SF12, and so on.
+function dualLabel() {
+  const sfEl = document.querySelector('#groups [data-name="sf"]'), dEl = document.querySelector('#groups [data-name="dual_sf"]');
+  if (!sfEl || !dEl) return;
+  const sf = Number(sfEl.value), other = sf === 12 ? 7 : sf === 7 ? 12 : 0;
+  dEl.closest("label").querySelector("b").textContent = other ? "Also transmit on SF" + other : "Also transmit on the other SF";
+  dEl.disabled = !other;
+}
+
+// ---- saving: send what changed, restart the radio if needed, save, then read everything back and compare ----
+function wantedPairs() {
+  const pairs = [];
+  document.querySelectorAll("#groups [data-name]").forEach(el => {
+    const name = el.dataset.name; let v = el.value.trim();
+    if (v === orig[name]) return;
+    if (!v) v = "-";
+    if (name === "call") v = v.toUpperCase();
+    pairs.push([name, v]);
+  });
+  return pairs;
+}
+const norm = (name, v) => (name === "call" ? v.toUpperCase() : v);
+function sameValue(name, want, have) {
+  if (have === undefined) return false;
+  const h = have.split(" ")[0], w = want === "-" ? "-" : want;
+  if (h === w) return true;
+  if (/^-?[\d.]+$/.test(w) && /^-?[\d.]+$/.test(h)) return Number(w) === Number(h);
+  if (name === "cr") return h === w || h === "4/" + w;
+  return have === w;
+}
+
+async function sendSets(pairs) {
+  const failed = []; let radio = false;
+  for (const [name, val] of pairs) {
+    const out = await ask("set " + name + " " + val, l => /^(ok:|error:)/.test(l), 2000);
+    const bad = out.find(l => l.startsWith("error:"));
+    if (bad) failed.push(name + ": " + bad.slice(6).trim());
+    if (RADIO.includes(name)) radio = true;
+  }
+  return { failed, radio };
+}
+
+async function save() {
+  const fe = $("formerr"); fe.hidden = true;
+  const pairs = wantedPairs();
+  if (!pairs.length) { status("Nothing changed, nothing to save."); return; }
+  $("save").disabled = true;
+  try {
+    const { failed, radio } = await sendSets(pairs);
+    let err = failed.length ? "Not accepted: " + failed.join("; ") : "";
+    if (!err && radio) {
+      const out = await ask("apply", l => /^(ok: radio|error:)/.test(l), 5000);
+      const bad = out.find(l => l.startsWith("error:"));
+      if (bad) err = bad.slice(6).trim();
+    }
+    if (err) { fe.hidden = false; fe.textContent = err; status("Nothing saved. Press Read again to see what the tracker holds now."); return; }
+    const out = await ask("save", l => /^(saved|already|error)/.test(l), 3000);
+    const saved = out.some(l => /^(saved|already)/.test(l)), eerr = out.find(l => l.startsWith("error"));
+    if (eerr) { fe.hidden = false; fe.textContent = eerr; }
+    // read it all back and check every value we sent
+    const r = await readStable();
+    const wrong = pairs.filter(([n, v]) => !sameValue(n, v, r.values[n])).map(([n, v]) => n + " (wanted " + v + ", the tracker has " + (r.values[n] === undefined ? "nothing" : r.values[n]) + ")");
+    await readSettings();                                   // refresh the form first: it sets its own status line
+    if (wrong.length) { fe.hidden = false; fe.textContent = "After saving, these do not match: " + wrong.join("; ") + ". Press Save again."; status("Check the values."); }
+    else if (!saved) status("Sent, but no confirmation of the save. Press Read again to check.");
+    else status("Saved to the tracker and checked: every value reads back as sent.");
+  } finally { $("save").disabled = false; }
+}
+
+async function action(cmd, okRe, doneText) {
+  if (!port) { status("Connect first."); return; }
+  const out = await ask(cmd, l => okRe.test(l) || /^error/.test(l), 3000);
+  const bad = out.find(l => /^error/.test(l));
+  status(bad ? bad : doneText);
+}
+
+// Opens the port, then types a key: in the 3 second boot window that opens setup mode.
+async function connect() {
+  try {
+    port = await navigator.serial.requestPort();
+    lastPort = port;
+    await port.open({ baudRate: 115200 });
+  } catch (e) { port = null; status(e.name === "NotFoundError" ? "No port chosen." : "Could not open the port: " + e.message); return; }
+  writer = port.writable.getWriter();
+  $("connect").disabled = true; $("disconnect").disabled = false;
+  pump();
+  await sleep(300);
+  await send("");                                       // a key: the boot window opens setup mode
+  await sleep(500);
+  await readSettings();
+}
+
+function disconnected() {
+  port = null; writer = null;
+  $("connect").disabled = false; $("disconnect").disabled = true;
+  $("form").hidden = true;
+  status("Not connected.");
+}
+
+async function disconnect() {
+  const p = port; port = null;
+  try { if (reader) await reader.cancel(); } catch (e) {}
+  try { if (writer) { writer.releaseLock(); } } catch (e) {}
+  try { if (p) await p.close(); } catch (e) {}
+  disconnected();
+}
+
+// ---- Update the firmware over the chip's built-in serial bootloader (ST application note AN3155) ----
+let lastPort = null, fwBytes = null, fwName = "";
+const FLASH = 0x08000000, PAGE = 2048, MAXFW = 260096;      // the last 2 KB page holds the settings: the program may not reach it
+const xr = bs => bs.reduce((a, b) => a ^ b, 0);
+const be = (n, len) => { const o = []; for (let i = len - 1; i >= 0; i--) o.push((n >>> (8 * i)) & 255); return o; };
+const hex = b => [...new Uint8Array(b)].map(v => v.toString(16).padStart(2, "0")).join("");
+function flog(t) { const e = $("flashlog"); e.hidden = false; e.textContent += t + "\n"; e.scrollTop = e.scrollHeight; }
+function fstatus(t) { $("flashstatus").textContent = t; }
+
+async function runFlash(p, data, progress) {
+  await p.open({ baudRate: 115200, dataBits: 8, stopBits: 1, parity: "even", bufferSize: 4096 });   // 8E1: what the bootloader speaks
+  const w = p.writable.getWriter(), r = p.readable.getReader();
+  const q = []; let wake = null, stop = false;
+  (async () => { try { while (!stop) { const { value, done } = await r.read(); if (done) break; for (const v of value) q.push(v); if (wake) wake(); } } catch (e) {} })();
+  const rx = async (n, ms = 2000) => {
+    const end = Date.now() + ms;
+    while (q.length < n) {
+      const left = end - Date.now();
+      if (left <= 0) throw new Error("no answer from the board. Is it in the bootloader? hold Key 1, tap Reset and keep holding it a second, or connect first so the page can do it");
+      await new Promise(res => { wake = res; setTimeout(res, left); });
+    }
+    return q.splice(0, n);
+  };
+  const tx = b => w.write(new Uint8Array(b));
+  const ack = async (ms, what) => { const b = (await rx(1, ms))[0]; if (b !== 0x79) throw new Error("the bootloader refused " + what + " (0x" + b.toString(16) + ")"); };
+  const cmd = async c => { await tx([c, c ^ 0xff]); await ack(2000, "command 0x" + c.toString(16)); };
+  try {
+    await tx([0x7f]);                                           // start byte; a bootloader that is already awake does not answer it
+    try { await rx(1, 700); } catch (e) {}
+    q.length = 0;
+    await cmd(0x00); const n = (await rx(1))[0]; const info = await rx(n + 1); await ack(2000, "the version request");
+    flog("bootloader version 0x" + info[0].toString(16));
+    const pages = Math.ceil(data.length / PAGE);
+    await cmd(0x44);                                            // extended erase, just the pages the program needs
+    const body = be(pages - 1, 2); for (let i = 0; i < pages; i++) body.push(...be(i, 2));
+    await tx([...body, xr(body)]); await ack(30000, "the erase");
+    flog("erased " + pages + " pages");
+    // The first page goes in LAST: until then the start of flash is blank, and a blank chip starts its own bootloader,
+    // so an update that is interrupted halfway can just be run again, with no ST-LINK.
+    const first = Math.min(PAGE, data.length), offs = [], head = [];
+    for (let o = first; o < data.length; o += 256) offs.push(o);
+    for (let o = 0; o < first; o += 256) head.push(o);
+    const total = offs.length + head.length; let done = 0;
+    const writeBlock = async off => {
+      const chunk = [...data.subarray(off, off + 256)];
+      await cmd(0x31);
+      const ad = be(FLASH + off, 4); await tx([...ad, xr(ad)]); await ack(2000, "an address");
+      const pl = [chunk.length - 1, ...chunk]; await tx([...pl, xr(pl)]); await ack(5000, "the write at 0x" + (FLASH + off).toString(16));
+      progress(0.5 * ++done / total);
+    };
+    const checkBlock = async off => {
+      const len = Math.min(256, data.length - off);
+      await cmd(0x11);
+      const ad = be(FLASH + off, 4); await tx([...ad, xr(ad)]); await ack(2000, "a read address");
+      await tx([len - 1, (len - 1) ^ 0xff]); await ack(2000, "a read length");
+      const got = await rx(len, 3000);
+      for (let i = 0; i < len; i++) if (got[i] !== data[off + i]) throw new Error("the check failed at 0x" + (FLASH + off + i).toString(16));
+      progress(0.5 + 0.5 * ++done / (2 * total));
+    };
+    for (const o of offs) await writeBlock(o);
+    flog("written, checking...");
+    done = 0;
+    for (const o of offs) await checkBlock(o);
+    for (const o of head) await writeBlock(o);                  // only now does the start of flash stop being blank
+    for (const o of head) await checkBlock(o);
+    flog("verified OK");
+    await cmd(0x21); const ad = be(FLASH, 4); await tx([...ad, xr(ad)]); await ack(2000, "the start");
+    flog("started the program");
+  } finally {
+    stop = true;
+    try { await r.cancel(); } catch (e) {}
+    try { r.releaseLock(); w.releaseLock(); } catch (e) {}
+    try { await p.close(); } catch (e) {}
+  }
+}
+
+function checkImage(d) {
+  if (d.length < 1024 || d.length > MAXFW) return "That file is not firmware for this chip (" + d.length + " bytes; it must be 1 KB to " + (MAXFW / 1024) + " KB).";
+  if (d[3] !== 0x20) return "That file does not look like STM32 firmware (its first word is not a RAM address).";
+  return "";
+}
+
+async function showFw(name, bytes) {
+  fwBytes = new Uint8Array(bytes.length % 4 ? bytes.length + 4 - bytes.length % 4 : bytes.length).fill(255); fwBytes.set(bytes);
+  fwName = name;
+  const e = checkImage(bytes);
+  let h = ""; try { h = hex(await crypto.subtle.digest("SHA-256", bytes)).slice(0, 16); } catch (x) {}
+  $("fwinfo").textContent = e || (name + ": " + bytes.length + " bytes" + (h ? ", SHA-256 starts " + h : "") + ".");
+  $("flashbtn").disabled = !!e || !("serial" in navigator);
+  if (e) fwBytes = null;
+}
+
+
+// ../firmware/manifest.json lists the firmware that comes with this copy of the page:
+//   { "version": "1.0.0", "builds": [ { "name": "Tracker with Horus", "file": "tracker-horus.bin" }, ... ] }
+let manifest = null;
+async function loadBundled() {
+  try {
+    manifest = await (await fetch("../firmware/manifest.json", { cache: "no-cache" })).json();
+    const pick = $("fwpick"); pick.textContent = "";
+    manifest.builds.forEach((b, i) => pick.add(new Option(b.name, String(i))));
+    pick.hidden = false; pick.closest("label").hidden = false;
+    await pickBundled();
+  } catch (e) { $("fwpick").closest("label").hidden = true; $("fwinfo").textContent = "No firmware comes with this copy of the page. Choose a .bin file below."; }
+}
+async function pickBundled() {
+  const b = manifest.builds[Number($("fwpick").value || 0)];
+  try {
+    const bytes = new Uint8Array(await (await fetch("../firmware/" + b.file, { cache: "no-cache" })).arrayBuffer());
+    await showFw(b.name + " " + (manifest.version || ""), bytes);
+  } catch (e) { $("fwinfo").textContent = "Could not load " + b.file + ". Choose a .bin file below."; }
+}
+
+async function doFlash() {
+  const e = fwBytes ? "" : "Choose a firmware file first.";
+  if (e) { fstatus(e); return; }
+  $("flashbtn").disabled = true; $("flashlog").textContent = ""; $("fwprog").hidden = false; $("fwprog").value = 0;
+  try {
+    if (port) {                                          // connected: put the tracker into its bootloader ourselves
+      fstatus("Asking the tracker to enter its bootloader...");
+      const out = await ask("bootloader", l => /entering the bootloader|unsaved|error/.test(l), 2500);
+      if (out.some(l => /unsaved/.test(l))) { fstatus("The tracker has unsaved changes: Save them first, or restart it with reboot force."); return; }
+      await sleep(600);
+      await disconnect();
+    }
+    if (!lastPort) lastPort = await navigator.serial.requestPort();
+    fstatus("Flashing " + fwName + "...");
+    await runFlash(lastPort, fwBytes, f => { $("fwprog").value = Math.round(f * 100); });
+    $("fwprog").value = 100;
+    fstatus("Done. The new firmware is running. Press Connect above to set it up.");
+  } catch (err) {
+    fstatus(err.name === "NotFoundError" ? "No port chosen." : "Failed: " + err.message);
+  } finally { $("flashbtn").disabled = !fwBytes || !("serial" in navigator); }
+}
+
+$("connect").onclick = connect;
+$("disconnect").onclick = disconnect;
+$("save").onclick = save;
+$("reread").onclick = readSettings;
+$("actbeacon").onclick = () => action("beacon", /^ok:/, "A beacon cycle starts now.");
+$("acthorus").onclick = () => action("horus", /^ok:/, "A Horus packet follows the next beacon cycle, which starts now.");
+$("actrun").onclick = () => action("exit", /^(ok: running|\(already)/, "The tracker is running.");
+$("flashbtn").onclick = doFlash;
+$("fwpick").onchange = pickBundled;
+$("clearlog").onclick = () => { $("log").textContent = ""; };
+$("fwfile").onchange = async ev => { const f = ev.target.files[0]; if (f) await showFw(f.name, new Uint8Array(await f.arrayBuffer())); };
+loadBundled();
+if (!("serial" in navigator)) { $("nosupport").hidden = false; $("connect").disabled = true; }
+</script>
+</body>
+</html>
