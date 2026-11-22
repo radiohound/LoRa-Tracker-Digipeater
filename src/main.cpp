@@ -408,6 +408,9 @@ static void horusAfterBeacon() {
     f.fixMs = lastPos.fixMs;
 #endif
     f.speedKmh = lastPos.speed * 1.852f;                      // knots -> km/h
+#if BMP280_ENABLED
+    if (bmpReady) { f.hasTemp = true; f.tempC = bmp.readTemperature(); }
+#endif
     DBGLN(F("[Horus] TX"));
     if (horusSendDivided(f)) { DBG(F("[Horus] sent #")); DBGLN(horusSequence()); }
     radioReady = false;                                       // radio is in FSK mode now

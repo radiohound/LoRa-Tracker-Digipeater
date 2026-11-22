@@ -403,13 +403,18 @@ set `HORUS_ENABLED 1` in `config.h`.
 
 | Setting (`config.h`) | Meaning |
 |---|---|
-| `HORUS_PAYLOAD_ID` | Horus v2 payload ID, 256–65535. 256 is the shared test ID — request your own at [horusdemodlib](https://github.com/projecthorus/horusdemodlib) (`payload_id_list.txt`). |
+| `HORUS_VERSION` | `3` (default) = the callsign is in the packet, no ID needed. `2` = payload ID; v2 is deprecated and new v2 IDs are no longer issued. A v3 packet with the usual fields fits a 32-byte frame, so it takes the same ~3.3 s of airtime as v2. |
+| `HORUS_CALLSIGN` | v3 payload callsign, default `MY_CALLSIGN-MY_SSID` (e.g. `W2HAB-11`). Letters, digits, `-` and `/`, up to 15 characters. |
+| `HORUS_PAYLOAD_ID` | v2 only: payload ID, 256–65535. 256 is the shared test ID. |
 | `HORUS_FREQ_MHZ` | Lowest of the four tones, set 1 kHz above the nominal frequency so receivers tuned to the nominal frequency (USB) hear the tones in the audio band. Default 431.051 = nominal 431.050 MHz, the local Horus frequency here; 434.200 MHz (set 434.201) is the usual frequency in other regions. |
 | `HORUS_TX_POWER_DBM` | Above 14 dBm uses the high-power PA. See the PA note below for lower power. |
 | `HORUS_BEACON_DIVIDER` | Send Horus on every Nth beacon. |
 | `HORUS_TIME_SYNC_SECONDS`, `HORUS_TIME_SYNC_OFFSET_SECONDS` | Time slots, same scheme as RS41ng: transmit when GPS time (seconds from the top of the hour) satisfies `(t − OFFSET) mod SYNC == 0`. `0` = off. For two payloads on one frequency use the same SYNC and different OFFSETs, e.g. SYNC 10 with OFFSET 0 and 5 (a Horus v2 packet takes ~3.3 s, so two fit in 10 s). Both payloads need a GPS time lock for the slots to hold. |
 
-The packet is built from the GPS fix and the BMP280 altitude (if present). Horus runs in the
+The packet is built from the GPS fix and the BMP280 altitude and temperature (if present). v3 also
+sends speed, satellites and an ascent rate worked out from the last two packets. The settings are
+copied into a runtime structure (`horusSettings()` in `src/horus/horus.h`) so a serial or web
+settings page can change them without a rebuild. Horus runs in the
 tracker modes only (`TRACKER_ONLY`, `TRACKER_DIGI`).
 
 **Clock.** Horus needs accurate symbol timing. The Arduino STM32 core runs this MCU from MSI
@@ -423,13 +428,18 @@ entry in the RF switch table, RadioLib uses the low-power PA at 14 dBm and below
 connected to the antenna on this module. Set `RF_HP_PA_ONLY 1` to use the HP PA at every
 power level (range −9…22 dBm). The default of 0 keeps the previous behaviour.
 
+**v3 encoder.** `src/horus/horus_v3.cpp` is a small hand-written ASN.1 (UPER) encoder for the
+fields above. `tools/test_horus_v3.py` checks it against the horusdemodlib ASN.1 definition: random
+packets must match the reference encoder byte for byte and decode back (3000 packets, 0 failures;
+packets too long for a 32-byte frame move to a 48-byte frame).
+
 **Third-party code.** The Horus layer-2 coding (Golay FEC, interleaver, scrambler) is in
 `src/horus/`, copied unchanged from horusdemodlib under the **LGPL 2.1** (see
 `src/horus/NOTICE.md`). The rest of this repository is MIT. It is only compiled when Horus is
 enabled.
 
 **What was tested.** Over the air on an E77-400M22S (STM32WLE5) with an RSPduo recording and a
-horusdemodlib 0.6.x station (RTL-SDR): the packets decode with CRC OK and upload to SondeHub
+horusdemodlib 0.6.x station (RTL-SDR): the packets (v2 and v3) decode with CRC OK, and upload to SondeHub
 (with correct UTC time stamps) from a test firmware; the tracker build decodes with a fake
 GPS fix. **Not tested:** a real GPS fix in flight, and current draw with the TCXO clock.
 

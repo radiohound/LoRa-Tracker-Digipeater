@@ -193,12 +193,21 @@
 // Sends a Horus v2 packet from the GPS fix after each APRS beacon (tracker modes only).
 // Needs the system clock on the TCXO (HSE_SYSCLK, switched on automatically below), because
 // the core's default clock runs ~1.9% slow and the symbols would go out at ~98 baud.
-// Horus v2 needs a payload ID: ask for one at
-// https://github.com/projecthorus/horusdemodlib (payload_id_list.txt). 256 is the shared test ID.
+// Horus v2 needs a payload ID (HORUS_PAYLOAD_ID); 256 is the shared test ID, new IDs are no longer issued.
 // Third-party LGPL code lives in src/horus/ (see src/horus/NOTICE.md).
 // ============================================================
 #ifndef HORUS_ENABLED
 #define HORUS_ENABLED          0
+#endif
+// Horus version: 3 = callsign in the packet (no ID needed, encouraged); 2 = payload ID, deprecated and
+// new v2 IDs are no longer issued. A v3 packet that fits 32 bytes takes the same airtime as v2.
+#ifndef HORUS_VERSION
+#define HORUS_VERSION          3
+#endif
+#ifndef HORUS_CALLSIGN
+#define HORUS_STR2(x)         #x
+#define HORUS_STR(x)          HORUS_STR2(x)
+#define HORUS_CALLSIGN         MY_CALLSIGN "-" HORUS_STR(MY_SSID)   // e.g. "W2HAB-11": letters, digits, '-', '/', up to 15 chars
 #endif
 #ifndef HORUS_PAYLOAD_ID
 #define HORUS_PAYLOAD_ID       256              // 256..65535; request your own
