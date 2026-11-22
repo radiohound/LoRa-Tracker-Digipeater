@@ -3,3 +3,12 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# host test builds (make -C test/host test)
+test/host/test_tk_settings
+test/host/test_flight_phase
+test/host/tks_sim
+test/host/*.dSYM/
+
+# generated for the SondeHub timing test (env horus_test_timed); its timestamps go stale, see platformio.ini
+src/horus_packets.h
