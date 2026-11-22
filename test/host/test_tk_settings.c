@@ -143,6 +143,11 @@ static void test_horus(void)
     run(&s, "set horus_off 10");   CHECK(said("below horus_sync") && s.horus_off_s == 5);
     run(&s, "set horus_sync 5");   CHECK(said("below horus_sync") && s.horus_sync_s == 10);
     run(&s, "set horus_div 0");    CHECK(said("out of range"));
+    /* the Horus note: text with spaces, limited characters and length */
+    run(&s, "set horus_note Test flight 1");   CHECK(strcmp(s.horus_note, "Test flight 1") == 0);
+    run(&s, "set horus_note bad!char");        CHECK(said("character not allowed") && strcmp(s.horus_note, "Test flight 1") == 0);
+    run(&s, "set horus_note 1234567890123456789012345678901"); CHECK(said("wrong length"));
+    run(&s, "set horus_note -");               CHECK(s.horus_note[0] == 0);
     /* rates by flight phase: defaults and range */
     CHECK(s.horus_asc_s == 30 && s.horus_desc_s == 10 && s.horus_gnd_s == 60 && s.aprs_desc_s == 15 && s.aprs_gnd_s == 60);
     run(&s, "set horus_desc 4");   CHECK(said("out of range") && s.horus_desc_s == 10);

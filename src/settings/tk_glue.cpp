@@ -119,6 +119,7 @@ void tkPushHorus() {
     h.syncSeconds   = tkCfg.horus_sync_s;
     h.offsetSeconds = tkCfg.horus_off_s;
     h.beaconDivider = tkCfg.horus_div;
+    snprintf(h.note, sizeof h.note, "%s", tkCfg.horus_note);
 #endif
 }
 

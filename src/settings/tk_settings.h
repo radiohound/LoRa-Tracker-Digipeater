@@ -42,6 +42,7 @@ typedef struct {
     /* send rates per flight phase, seconds. beacon_s above is the LoRa APRS rate while ascending. */
     uint16_t aprs_desc_s, aprs_gnd_s;
     uint16_t horus_asc_s, horus_desc_s, horus_gnd_s;
+    char     horus_note[32];      /* v3: free text sent in every Horus packet; empty = none */
 } tk_settings_t;
 
 /* What a command asks the caller to do (bit mask). */

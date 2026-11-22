@@ -26,6 +26,7 @@ struct HorusSettings {
     uint16_t syncSeconds;      // time slots: 0 = off
     uint16_t offsetSeconds;
     uint8_t  beaconDivider;    // tracker-only mode: send on every Nth beacon
+    char     note[32];         // v3: free text sent with every packet (empty = none)
 };
 
 HorusSettings& horusSettings();                    // defaults are filled in on first use

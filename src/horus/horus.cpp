@@ -37,6 +37,7 @@ HorusSettings& horusSettings() {
         settings.syncSeconds   = HORUS_TIME_SYNC_SECONDS;
         settings.offsetSeconds = HORUS_TIME_SYNC_OFFSET_SECONDS;
         settings.beaconDivider = HORUS_BEACON_DIVIDER;
+        settings.note[0]       = 0;
         settingsReady = true;
     }
     return settings;
@@ -88,7 +89,7 @@ static void buildV2(uint8_t* p, const HorusFix& f) {
     put16(p + 30, crc16(p, 30));
 }
 
-// Builds a v3 frame (CRC + UPER + padding). Tries a 32-byte frame, then 48. Returns its size.
+// Builds a v3 frame (CRC + UPER + padding) of 32, 48 or 64 bytes. Returns its size.
 static int buildV3(uint8_t* frame, const HorusFix& f, uint32_t t) {
     HorusV3Packet p = {};
     p.callsign = settings.callsign;
@@ -117,9 +118,18 @@ static int buildV3(uint8_t* frame, const HorusFix& f, uint32_t t) {
         float mv = f.batteryV * 1000.0f; if (mv > 16383) mv = 16383;
         p.hasBattery = true; p.batteryMv = (uint16_t)mv;
     }
-    int n = horusV3Encode(p, frame, 32);
-    if (n < 0) n = horusV3Encode(p, frame, 48);
-    return n;
+    // The note makes the packet longer: use the smallest frame that holds everything. If even the
+    // largest does not (very long callsign and note), send without the note rather than not at all.
+    static const uint8_t sizes[] = { 32, 48, 64 };
+    p.note = settings.note;
+    for (int pass = 0; pass < 2; pass++) {
+        for (uint8_t s : sizes) {
+            int n = horusV3Encode(p, frame, s);
+            if (n > 0) return n;
+        }
+        p.note = nullptr;
+    }
+    return -1;
 }
 
 // Moves the packet time forward to the moment of transmission and, if time slots are on,
@@ -164,12 +174,12 @@ bool horusSend(const HorusFix& fixIn) {
     }
     lastAltM = fix.altM; lastAltMs = fix.fixMs; haveLastAlt = true;
 
-    uint8_t coded[160];
+    uint8_t coded[192];
     horus_l2_init();
     int n = horus_l2_encode_tx_packet(coded, frame, frameLen);
-    if (n != horus_l2_get_num_tx_data_bytes(frameLen) || n > 120) return false;
+    if (n != horus_l2_get_num_tx_data_bytes(frameLen) || n > 160) return false;
 
-    static uint8_t tx[HORUS_PREAMBLE_LEN + 120];
+    static uint8_t tx[HORUS_PREAMBLE_LEN + 160];
     memset(tx, 0x1B, HORUS_PREAMBLE_LEN);
     memcpy(tx + HORUS_PREAMBLE_LEN, coded, n);
 

@@ -504,6 +504,12 @@ TCXO delay of 0 µs stops the radio transmitting at all (500 µs and 5 ms work).
 
 ---
 
+### Horus note (v3)
+
+`horus_note` is a short free text (up to 30 characters: letters, digits, space and `_ + / = - .`) sent in every Horus v3 packet, as an extra-sensor entry named `note` with a text value. It makes the packet longer, so it takes longer on the air: with a note the frame grows from 32 to 48 bytes (about 40 % more airtime, 4.4 s instead of 3.2 s at 100 baud), or 64 bytes for a long callsign and a long note. If a packet does not fit even in 64 bytes, the note is left out rather than the packet. Leave it empty for the shortest packets. Not used by version 2.
+
+Tested: the encoder against the horusdemodlib ASN.1 definition (4,000 random packets, bit for bit), and over the air: horusdemodlib 0.6.2 decodes it, shows the `extraSensors` entry and uploads the packet to SondeHub. How SondeHub's own pages display the note was not checked.
+
 ## Send rates by flight phase (tracker + digipeater mode)
 
 LoRa APRS and Horus each have their own interval for three phases, and the GPS decides which phase the board is in:

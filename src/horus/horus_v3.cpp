@@ -43,7 +43,36 @@ uint16_t crc16(const uint8_t* d, size_t n) {        // CCITT, init 0xFFFF (binas
     return crc;
 }
 
+// Index of a character of the extra-sensor name alphabet "-0-9a-z" (37 characters, 6 bits).
+int nameIndex(char c) {
+    if (c == '-') return 0;
+    if (c >= '0' && c <= '9') return 1 + (c - '0');
+    if (c >= 'a' && c <= 'z') return 11 + (c - 'a');
+    return -1;
+}
+
+// Index of a note character in the allowed set, sorted by ASCII code (69 characters, 7 bits):
+// space + - . /  0-9  =  A-Z  _  a-z.  -1 if it is not allowed.
+int noteIndex(char c) {
+    switch (c) {
+        case ' ': return 0;  case '+': return 1;  case '-': return 2;  case '.': return 3;  case '/': return 4;
+        case '=': return 15; case '_': return 42;
+    }
+    if (c >= '0' && c <= '9') return 5 + (c - '0');
+    if (c >= 'A' && c <= 'Z') return 16 + (c - 'A');
+    if (c >= 'a' && c <= 'z') return 43 + (c - 'a');
+    return -1;
+}
+
 } // namespace
+
+bool horusV3NoteOk(const char* note) {
+    if (!note) return true;
+    size_t n = strlen(note);
+    if (n > 36) return false;
+    for (size_t i = 0; i < n; i++) if (noteIndex(note[i]) < 0) return false;
+    return true;
+}
 
 int horusV3Encode(const HorusV3Packet& p, uint8_t* out, size_t frameSize) {
     if (!(frameSize == 32 || frameSize == 48 || frameSize == 64 || frameSize == 96 || frameSize == 128))
@@ -53,6 +82,9 @@ int horusV3Encode(const HorusV3Packet& p, uint8_t* out, size_t frameSize) {
     if (len < 1 || len > 15) return -2;
     for (size_t i = 0; i < len; i++) if (charIndex(p.callsign[i]) < 0) return -2;
 
+    size_t noteLen = p.note ? strlen(p.note) : 0;
+    if (!horusV3NoteOk(p.note)) return -5;
+
     memset(out, 0, frameSize);
     BitWriter w = { out + 2, frameSize - 2, 0, false };       // UPER bytes start after the CRC
 
@@ -60,7 +92,7 @@ int horusV3Encode(const HorusV3Packet& p, uint8_t* out, size_t frameSize) {
     // extraSensors, velocity, sats, ascent, pressure, temperature, humidity, milliVolts,
     // counts, gnssPowerSaveState, customData.
     w.put(0, 1);                                  // not using the extension (via)
-    w.put(0, 1);                                  // extraSensors
+    w.put(noteLen > 0, 1);                        // extraSensors
     w.put(p.hasSpeed,   1);
     w.put(p.hasSats,    1);
     w.put(p.hasAscent,  1);
@@ -81,6 +113,17 @@ int horusV3Encode(const HorusV3Packet& p, uint8_t* out, size_t frameSize) {
     if (!putRange(w, p.lat1e5,           -9000000, 9000000,  25)) return -3;
     if (!putRange(w, p.lon1e5,           -18000000,18000000, 26)) return -3;
     if (!putRange(w, p.altitudeM,        -1000,    50000,    16)) return -3;
+
+    if (noteLen > 0) {                            // extraSensors: one AdditionalSensorType
+        w.put(0, 2);                              // SEQUENCE SIZE(1..4): count - 1
+        w.put(1, 1); w.put(1, 1);                 // name present, values present
+        w.put(3, 5);                              // name length - 1 (SIZE 1..20): "note"
+        const char* name = "note";
+        for (int i = 0; i < 4; i++) w.put((uint32_t)nameIndex(name[i]), 6);
+        w.put(0, 2);                              // CHOICE: horusStr
+        w.put((uint32_t)noteLen, 8);              // SIZE(0..255)
+        for (size_t i = 0; i < noteLen; i++) w.put((uint32_t)noteIndex(p.note[i]), 7);   // 69 allowed characters: 7 bits each
+    }
 
     if (p.hasSpeed  && !putRange(w, p.speedKmh,     0,      512,   10)) return -3;
     if (p.hasSats   && !putRange(w, p.sats,         0,      31,    5))  return -3;

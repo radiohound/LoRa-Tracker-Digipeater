@@ -8,7 +8,7 @@
 #include <string.h>
 
 enum { K_NUM, K_BOOL, K_STR };
-enum { CS_CALL, CS_PATH, CS_TEXT, CS_SYM, CS_HCALL };
+enum { CS_CALL, CS_PATH, CS_TEXT, CS_SYM, CS_HCALL, CS_NOTE };
 #define F_RADIO 1u      /* needs the radio to be re-initialised */
 #define F_HEX   2u      /* shown and accepted as 0xNN */
 #define F_BW    4u      /* only the LoRa bandwidths */
@@ -62,6 +62,7 @@ static const field_t FIELDS[] = {
     /* 28 */ NUMF ("horus_asc", horus_asc_s, 0, 0, 5, 86400, "s"),
     /* 29 */ NUMF ("horus_desc", horus_desc_s, 0, 0, 5, 86400, "s"),
     /* 30 */ NUMF ("horus_gnd", horus_gnd_s, 0, 0, 5, 86400, "s"),
+    /* 31 */ STRF ("horus_note", horus_note, CS_NOTE, 0, 0, 30),
 };
 #define NFIELDS ((int)(sizeof FIELDS / sizeof FIELDS[0]))
 #define F_CALLSIGN (&FIELDS[0])
@@ -159,6 +160,7 @@ static int cs_ok(int cs, unsigned char c)
     case CS_PATH:    return (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == ',' || c == '-' || c == '*';
     case CS_TEXT:    return c >= 0x20 && c <= 0x7D && c != '|';           /* APRS comments may not hold | or ~ */
     case CS_SYM:     return c >= 0x21 && c <= 0x7E;
+    case CS_NOTE:    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == ' ' || c == '_' || c == '+' || c == '/' || c == '=' || c == '-' || c == '.';
     case CS_HCALL:   return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '/';
     }
     return 0;

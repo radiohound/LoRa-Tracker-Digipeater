@@ -239,7 +239,7 @@ const GROUPS = [
   ["LoRa APRS beacon", ["call", "ssid", "comment", "sym_table", "sym_code", "path", "tocall", "aprs", "gps_timeout"]],
   ["How often to send, by flight phase (the GPS decides the phase: ascent, descent, landed)", ["beacon_s", "aprs_desc", "aprs_gnd", "horus_asc", "horus_desc", "horus_gnd"]],
   ["LoRa radio (APRS). These need the radio restarted: the page does that when you save.", ["freq", "bw", "sf", "cr", "power", "sync", "preamble"]],
-  ["Horus Binary (4FSK telemetry)", ["horus", "horus_ver", "horus_call", "horus_id", "horus_freq", "horus_power", "horus_sync", "horus_off"]],
+  ["Horus Binary (4FSK telemetry)", ["horus", "horus_ver", "horus_call", "horus_note", "horus_id", "horus_freq", "horus_power", "horus_sync", "horus_off"]],
 ];
 const DESC = {
   call: "Your callsign without the SSID. Until it is set to something other than N0CALL the tracker sends no LoRa APRS.",
@@ -267,6 +267,7 @@ const DESC = {
   horus: "Send Horus Binary packets after each beacon cycle. Needs a firmware built with Horus.",
   horus_ver: "3 puts the callsign in the packet and needs no ID (recommended). 2 uses a payload ID; new v2 IDs are no longer issued.",
   horus_call: "The Horus v3 payload callsign. Empty means the callsign above with its SSID. It can be different from the APRS callsign. Letters, digits, - and /, up to 15 characters, upper and lower case count.",
+  horus_note: "A short text sent in every Horus v3 packet (up to 30 characters: letters, digits, space and _ + / = - .). It makes each packet longer, so it takes longer on the air (a 48- or 64-byte frame instead of 32). Empty = none. Not used by version 2. How receivers show it varies.",
   horus_id: "Horus v2 payload ID, 256 to 65535. Only used with version 2. 256 is the shared test ID.",
   horus_freq: "The lowest of the four Horus tones, in MHz. Put it 1 kHz above the frequency you announce, so receivers tuned to that frequency (USB) hear the tones: 431.051 for 431.050.",
   horus_power: "Horus transmit power in dBm. At 14 or below the low-power amplifier is used (see power above): use 15 to 22 unless the firmware was built for the high-power amplifier only.",

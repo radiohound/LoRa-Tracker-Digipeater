@@ -22,7 +22,13 @@ struct HorusV3Packet {
     bool     hasAscent;  int16_t  ascentCmPerS;    // -32767..32767
     bool     hasTemp;    int16_t  tempInternalX10; // -1023..1023 (tenths of a degree C)
     bool     hasBattery; uint16_t batteryMv;       // 0..16383
+
+    // Free text, sent as one extra-sensor entry named "note" with a text value. Empty or null = none.
+    // Characters: a-z A-Z 0-9 space _ + / = - .   (at most 36, and it needs a 48- or 64-byte frame)
+    const char* note;
 };
+
+bool horusV3NoteOk(const char* note);              // every character is allowed and the length is 0..36
 
 // Encodes into out[0..frameSize-1]. Returns frameSize on success, or a negative number if
 // the callsign is invalid, a value is out of range, or the packet does not fit.
