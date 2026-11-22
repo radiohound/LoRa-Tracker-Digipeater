@@ -61,9 +61,12 @@ in the root.
 
 Open `include/config.h` and set:
 - `OPERATING_MODE` — choose your mode (see table below)
-- `MY_CALLSIGN`, `MY_SSID`, `MY_COMMENT`
-- `LORA_FREQ` for your region (433.775 MHz is used almost world wide — check local LoRa APRS frequency)
 - Verify `RFSWITCH_PINS` / `RFSWITCH_TABLE` matches your board (see RF switch table below)
+
+The rest (callsign, comment, beacon interval, LoRa frequency, Horus...) can be changed later on the serial
+port, without rebuilding: see [Settings on the serial port](#settings-on-the-serial-port). The values in
+`config.h` are only the defaults. **The tracker transmits nothing until you set a callsign**
+(it starts as `N0CALL`).
 
 ### 4. Connect the hardware
 
@@ -395,6 +398,34 @@ Change `BEACON_INTERVAL_S` in `config.h`. Recommended minimums:
 
 ---
 
+## Settings on the serial port
+
+Callsign, comment, beacon interval, the LoRa radio settings and the Horus settings are kept in the chip's
+flash and changed over the serial port, as in [lora-aprs-digi](https://github.com/radiohound/lora-aprs-digi):
+no rebuild. The values in `config.h` are the defaults.
+
+Open a terminal on the USB serial port (115200 baud, local echo off) and **press a key within 3 seconds
+of power-up** to enter setup mode (the tracker waits there until you type `exit` or `reboot`). The commands also
+work while it is running in the tracker modes.
+
+```
+set call W2HAB-11        callsign and SSID (set call W2HAB changes only the callsign)
+set beacon_s 60          check each value as you type it; a refused value changes nothing
+set freq 433.775         LoRa radio settings (freq bw sf cr power sync preamble) need:  apply
+save                     keep the changes after a power-off (refused until radio changes are applied)
+show   get NAME   help   defaults   beacon   horus   reboot [force]   exit
+```
+
+- **Nothing is transmitted while the callsign is `N0CALL`** (the default). `beacon` and `horus` refuse too.
+- `save` writes one record into the last 2 KB flash page (`board_upload.maximum_size` keeps the program out of
+  it). A damaged or out-of-range record is ignored entry by entry and the defaults are used.
+- Reflashing the program keeps the saved settings. To clear them, erase that page or type `defaults`, `apply`, `save`.
+- `OPERATING_MODE` is still a compile-time choice, and the CAD digipeater modes do not read the command line yet.
+- The engine is `src/settings/tk_settings.c` (plain C, tested on a PC: `cd test/host && make test`), the flash and
+  serial glue is `src/settings/tk_glue.cpp`.
+
+---
+
 ## Horus Binary v2 (4FSK) — optional
 
 The tracker can send Horus Binary v2 (4FSK, 100 baud, 270 Hz tone spacing) after each APRS
@@ -404,7 +435,7 @@ set `HORUS_ENABLED 1` in `config.h`.
 | Setting (`config.h`) | Meaning |
 |---|---|
 | `HORUS_VERSION` | `3` (default) = the callsign is in the packet, no ID needed. `2` = payload ID; v2 is deprecated and new v2 IDs are no longer issued. A v3 packet with the usual fields fits a 32-byte frame, so it takes the same ~3.3 s of airtime as v2. |
-| `HORUS_CALLSIGN` | v3 payload callsign, default `MY_CALLSIGN-MY_SSID` (e.g. `W2HAB-11`). Letters, digits, `-` and `/`, up to 15 characters. |
+| `horus_call` (setting) | v3 payload callsign. Empty (the default) means the tracker callsign with its SSID (e.g. `W2HAB-11`). Letters, digits, `-` and `/`, up to 15 characters, case sensitive. |
 | `HORUS_PAYLOAD_ID` | v2 only: payload ID, 256–65535. 256 is the shared test ID. |
 | `HORUS_FREQ_MHZ` | Lowest of the four tones, set 1 kHz above the nominal frequency so receivers tuned to the nominal frequency (USB) hear the tones in the audio band. Default 431.051 = nominal 431.050 MHz, the local Horus frequency here; 434.200 MHz (set 434.201) is the usual frequency in other regions. |
 | `HORUS_TX_POWER_DBM` | Above 14 dBm uses the high-power PA. See the PA note below for lower power. |

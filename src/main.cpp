@@ -20,6 +20,7 @@
 #include <STM32LowPower.h>
 #include <STM32RTC.h>
 #include "config.h"
+#include "settings/tk_glue.h"
 #if HORUS_ENABLED
 #include "horus/horus.h"
 #endif
@@ -176,7 +177,7 @@ void radioInit() {
     radio.setRfSwitchTable(rfswitch_pins, rfswitch_table);
 
     DBG(F("[Radio] Init LoRa... "));
-    int state = radio.begin(LORA_FREQ, LORA_BW, LORA_SF, LORA_CR);
+    int state = radio.begin(tkCfg.freq_hz / 1e6f, tkCfg.bw_hz / 1000.0f, tkCfg.sf, tkCfg.cr);
     if (state != RADIOLIB_ERR_NONE) {
         DBG(F("failed, code ")); DBGLN(state);
         while (true) delay(10);
@@ -188,15 +189,15 @@ void radioInit() {
         while (true) delay(10);
     }
 
-    if (radio.setOutputPower(LORA_TX_POWER) == RADIOLIB_ERR_INVALID_OUTPUT_POWER) {
+    if (radio.setOutputPower(tkCfg.power_dbm) == RADIOLIB_ERR_INVALID_OUTPUT_POWER) {
         DBGLN(F("[Radio] Invalid power!")); while (true) delay(10);
     }
     if (radio.setCurrentLimit(LORA_OCP_MA) == RADIOLIB_ERR_INVALID_CURRENT_LIMIT) {
         DBGLN(F("[Radio] Invalid OCP!")); while (true) delay(10);
     }
 
-    radio.setSyncWord(LORA_SYNC_WORD);
-    radio.setPreambleLength(LORA_PREAMBLE);
+    radio.setSyncWord(tkCfg.sync);
+    radio.setPreambleLength(tkCfg.preamble);
     radio.setPacketReceivedAction(onRadioRx);
     radio.setChannelScanAction(onRadioCad);
 
@@ -204,11 +205,15 @@ void radioInit() {
     DBGLN(F("OK"));
 }
 
+void tkApplyRadio()          { radioInit(); }
+void tkOnSettingsChanged()   { tks_fullcall(&tkCfg, myCallsignFull, sizeof myCallsignFull); }
+
 void radioSleep()    { radio.sleep(); radioReady = false; }
 void radioStartRx()  { radio.setPacketReceivedAction(onRadioRx); radio.startReceive(); }
 void radioStartCad() { radio.startChannelScan(); }
 
 bool radioTransmit(const String& tnc2) {
+    if (!tks_call_is_set(&tkCfg)) { DBGLN(F("[TX] callsign is N0CALL: nothing is transmitted")); return false; }
     String pkt = "<\xff\x01" + tnc2;
     DBG(F("[TX APRS] ")); DBGLN(pkt);
     int state = radio.transmit(pkt);
@@ -284,6 +289,7 @@ bool waitForFix(uint32_t timeoutMs) {
             lastPos.valid  = true;
             return true;
         }
+        tkSerialPoll();
         delay(100);
     }
     DBGLN(F("[GPS] Fix timeout."));
@@ -373,15 +379,15 @@ String buildAPRSPacket() {
     String gpsData = APRSPacketLib::encodeGPSIntoBase91(
         lastPos.lat, lastPos.lon,
         lastPos.course, lastPos.speed,
-        String(APRS_SYMBOL_CODE),
+        String(tkCfg.sym_code),
         true, (int)(altM * 3.28084f));
 
     return APRSPacketLib::generateBase91GPSBeaconPacket(
         String(myCallsignFull),
-        String(APRS_DESTINATION),
-        String(BEACON_PATH),
-        String(APRS_SYMBOL_TABLE),
-        gpsData) + MY_COMMENT;
+        String(tkCfg.tocall),
+        String(tkCfg.path),
+        String(tkCfg.sym_table),
+        gpsData) + (tkCfg.comment[0] ? String(" ") + tkCfg.comment : String());
 }
 
 // ============================================================
@@ -411,8 +417,10 @@ static void horusAfterBeacon() {
 #if BMP280_ENABLED
     if (bmpReady) { f.hasTemp = true; f.tempC = bmp.readTemperature(); }
 #endif
+    if (!tkCfg.horus || !tks_call_is_set(&tkCfg)) return;
     DBGLN(F("[Horus] TX"));
-    if (horusSendDivided(f)) { DBG(F("[Horus] sent #")); DBGLN(horusSequence()); }
+    bool force = tkHorusNow; tkHorusNow = false;
+    if (force ? horusSend(f) : horusSendDivided(f)) { DBG(F("[Horus] sent #")); DBGLN(horusSequence()); }
     radioReady = false;                                       // radio is in FSK mode now
 }
 #endif
@@ -421,7 +429,7 @@ static void horusAfterBeacon() {
 // SEND BEACON
 // ============================================================
 void sendBeacon() {
-    bool haveFix = waitForFix(GPS_FIX_TIMEOUT_MS);
+    bool haveFix = waitForFix((uint32_t)tkCfg.gps_timeout_s * 1000UL);
     bool havePos = haveFix || lastPos.valid;
 
     if (!havePos) {
@@ -445,7 +453,7 @@ void sendBeacon() {
     }
 #endif
 
-    if (havePos) {
+    if (havePos && tkCfg.aprs) {
         radioTransmit(buildAPRSPacket());
     }
 }
@@ -830,7 +838,7 @@ void setup() {
 #endif
     DBGLN(F("=== LoRa APRS Tracker ==="));
 
-    snprintf(myCallsignFull, sizeof(myCallsignFull), "%s-%d", MY_CALLSIGN, MY_SSID);
+    tkSettingsBegin();                                  // settings from flash (or the defaults in config.h), callsign
 
     LowPower.begin();
     rtc.begin();
@@ -848,6 +856,8 @@ void setup() {
 #endif
 
     radioInit();
+
+    tkBootWindow(3000);                                 // a key within 3 s opens the setup command line
 
 #if OPERATING_MODE == MODE_DIGI_ONLY
     radioStartRx();
@@ -868,7 +878,7 @@ void loop() {
 #endif
     gpsPowerOff();
     radioSleep();
-    enterDeepSleep((uint32_t)BEACON_INTERVAL_S * 1000UL);
+    enterDeepSleep((uint32_t)tkCfg.beacon_s * 1000UL);
 
 #elif OPERATING_MODE == MODE_TRACKER_DIGI
     if (!gpsReady) gpsInit();
@@ -880,14 +890,17 @@ void loop() {
     radioInit();
     radioRxFlag = false;
     radioStartRx();
-    uint32_t end = millis() + (uint32_t)BEACON_INTERVAL_S * 1000UL;
-    while (millis() < end) {
+    uint32_t end = millis() + (uint32_t)tkCfg.beacon_s * 1000UL;
+    while (millis() < end && !tkBeaconNow) {          // "beacon" on the serial port ends the wait early
+        tkSerialPoll();
         if (radioRxFlag) { radioRxFlag = false; processRxPacket(); }
         flushDigiQueue();
         delay(10);
     }
+    tkBeaconNow = false;
 
 #elif OPERATING_MODE == MODE_DIGI_ONLY
+    tkSerialPoll();
     if (radioRxFlag) { radioRxFlag = false; processRxPacket(); }
     flushDigiQueue();
     LowPower.idle(10);

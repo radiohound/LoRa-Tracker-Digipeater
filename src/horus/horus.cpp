@@ -27,7 +27,7 @@ static bool     haveLastAlt = false;
 HorusSettings& horusSettings() {
     if (!settingsReady) {
         settings.version       = HORUS_VERSION;
-        snprintf(settings.callsign, sizeof(settings.callsign), "%s", HORUS_CALLSIGN);
+        snprintf(settings.callsign, sizeof(settings.callsign), "%s", DEFAULT_CALLSIGN);   // replaced by tkPushHorus() at boot
         settings.payloadId     = HORUS_PAYLOAD_ID;
         settings.freqMhz       = HORUS_FREQ_MHZ;
         settings.powerDbm      = HORUS_TX_POWER_DBM;

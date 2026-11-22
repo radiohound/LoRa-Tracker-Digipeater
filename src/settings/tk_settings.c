@@ -40,7 +40,7 @@ static const field_t FIELDS[] = {
     /*  6 */ STRF ("tocall", tocall, CS_CALL, 0, 1, 6),
     /*  7 */ NUMF ("beacon_s", beacon_s, 0, 0, 5, 86400, "s"),
     /*  8 */ BOOLF("aprs", aprs),
-    /*  9 */ NUMF ("gps_timeout", gps_timeout_s, 0, 0, 5, 600, "s"),
+    /*  9 */ NUMF ("gps_timeout", gps_timeout_s, 0, 0, 1, 600, "s"),
     /* 10 */ NUMF ("freq", freq_hz, 6, F_RADIO, 410000000, 510000000, "MHz"),
     /* 11 */ NUMF ("bw", bw_hz, 3, F_RADIO | F_BW, 7800, 500000, "kHz"),
     /* 12 */ NUMF ("sf", sf, 0, F_RADIO, 5, 12, ""),

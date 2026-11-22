@@ -34,18 +34,21 @@
 
 // ============================================================
 // IDENTITY
+// The callsign and SSID are settings now (see SETTINGS ON THE SERIAL PORT below), not compile-time values.
 // ============================================================
-#define MY_CALLSIGN         "W2HAB"
-#define MY_SSID             11
-#define MY_COMMENT          " STM32WLE5 LoRa"
+#define MY_COMMENT          " STM32WLE5 LoRa"     // default APRS comment
 
 // ============================================================
 // SETTINGS ON THE SERIAL PORT (src/settings/)
 // The values in this file are the defaults. Until a callsign other than N0CALL is saved, the tracker
 // transmits nothing. Set it with:  set call W2HAB-11  then  save   (type help for everything).
 // ============================================================
+#ifndef DEFAULT_CALLSIGN
 #define DEFAULT_CALLSIGN    "N0CALL"
+#endif
+#ifndef DEFAULT_SSID
 #define DEFAULT_SSID        0
+#endif
 
 // ============================================================
 // APRS
@@ -212,11 +215,7 @@
 #ifndef HORUS_VERSION
 #define HORUS_VERSION          3
 #endif
-#ifndef HORUS_CALLSIGN
-#define HORUS_STR2(x)         #x
-#define HORUS_STR(x)          HORUS_STR2(x)
-#define HORUS_CALLSIGN         MY_CALLSIGN "-" HORUS_STR(MY_SSID)   // e.g. "W2HAB-11": letters, digits, '-', '/', up to 15 chars
-#endif
+// The v3 payload callsign is the setting horus_call; empty means the tracker callsign with its SSID (e.g. W2HAB-11).
 #ifndef HORUS_PAYLOAD_ID
 #define HORUS_PAYLOAD_ID       256              // 256..65535; request your own
 #endif

@@ -57,6 +57,9 @@ static void test_numbers_and_radio(void)
     run(&s, "set beacon_s 4");        CHECK(said("out of range") && s.beacon_s == 60);
     run(&s, "set beacon_s 86401");    CHECK(said("out of range") && s.beacon_s == 60);
     run(&s, "set beacon_s 5 oops");   CHECK(said("one value only"));
+    run(&s, "set gps_timeout 0");     CHECK(said("out of range"));
+    run(&s, "set gps_timeout 1");     CHECK(s.gps_timeout_s == 1);                  /* bench builds use a short wait */
+    run(&s, "set gps_timeout 601");   CHECK(said("out of range") && s.gps_timeout_s == 1);
     run(&s, "set beacon_s abc");      CHECK(said("not a number"));
     f = run(&s, "set freq 433.775");  CHECK(!(f & TKS_CHANGED) && s.freq_hz == 433775000u);   /* same as the default */
     f = run(&s, "set freq 439.9125"); CHECK((f & TKS_CHANGED) && (f & TKS_RADIO) && s.freq_hz == 439912500u && said("type apply"));
