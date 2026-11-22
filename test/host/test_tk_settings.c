@@ -143,6 +143,11 @@ static void test_horus(void)
     run(&s, "set horus_off 10");   CHECK(said("below horus_sync") && s.horus_off_s == 5);
     run(&s, "set horus_sync 5");   CHECK(said("below horus_sync") && s.horus_sync_s == 10);
     run(&s, "set horus_div 0");    CHECK(said("out of range"));
+    /* also transmit on the other SF: off by default, a plain on/off */
+    CHECK(s.dual_sf == 0);
+    run(&s, "set dual_sf on");     CHECK(s.dual_sf == 1);
+    run(&s, "set dual_sf maybe");  CHECK(said("on or off") || said("error"));
+    run(&s, "set dual_sf off");    CHECK(s.dual_sf == 0);
     /* the extra APRS comment, sent on every Nth beacon */
     CHECK(s.comment2_every == 0 && s.comment2[0] == 0);
     run(&s, "set comment2 Call 555 1234");  CHECK(strcmp(s.comment2, "Call 555 1234") == 0);

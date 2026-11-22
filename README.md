@@ -504,6 +504,14 @@ TCXO delay of 0 µs stops the radio transmitting at all (500 µs and 5 ms work).
 
 ---
 
+### Also transmit on the other SF (`dual_sf`)
+
+A checkbox on the setup page, named after the SF it adds: **Also transmit on SF7** when the main SF is 12, **SF12** when the main SF is 7 (over serial: `set dual_sf on`). Each LoRa APRS beacon is then sent a second time, right after the first, with the same position on the other common spreading factor. For any other main SF it does nothing (and is greyed out on the page).
+
+Why: to see whether SF7 receivers hear a flight, and how well, and for chase cars that listen on SF7. At 125 kHz SF7 takes about 0.1 s of airtime where SF12 takes about 2.4 s, so the extra copy costs little. The second copy uses the same frequency, bandwidth, coding rate and sync word, and **has no digipeater path**, so it is heard and gated by iGates but not repeated by every digipeater in sight of a balloon at altitude. The board keeps listening on the main SF only, so it still digipeats on that SF but not on the other. The extra copy follows the APRS rate of the flight phase.
+
+Tested: the transmit sequence on the bench (SF12 beacon with its path, then the SF7 copy without a path, same position), and the page label and settings on a PC. Not yet checked over the air: that an SF7 receiver decodes the copy, and the SF7 airtime on a recording.
+
 ### Extra comment on some LoRa APRS beacons
 
 `comment2` is added after the normal `comment` (with a space between) on every `comment2_every`-th beacon: 1 is every beacon, 3 every third, 0 never (the default). It suits text that need not go out every time, such as a contact note, and saves airtime on the other beacons. Up to 43 characters. The count restarts at each power-up, so the first extra comment goes out on beacon number `comment2_every`.

@@ -45,6 +45,7 @@ typedef struct {
     char     horus_note[32];      /* v3: free text sent in every Horus packet; empty = none */
     char     comment2[44];        /* LoRa APRS: extra text added to the comment on every Nth beacon */
     uint8_t  comment2_every;      /* N; 0 = never */
+    uint8_t  dual_sf;             /* also send each beacon on the other common SF (SF7 <-> SF12), without a digipeater path */
 } tk_settings_t;
 
 /* What a command asks the caller to do (bit mask). */

@@ -140,7 +140,7 @@ void    gpsPowerOn();
 void    gpsPowerOff();
 bool    waitForFix(uint32_t timeoutMs);
 void    sendBeacon();
-String  buildAPRSPacket();
+String  buildAPRSPacket(const char* path = nullptr, bool advance = true);
 void    processRxPacket();
 bool    processRxPacketBattery();
 void    runDiGiCAD();
@@ -383,7 +383,7 @@ void checkCutdown(float altM) {
 // ============================================================
 // APRS PACKET
 // ============================================================
-String buildAPRSPacket() {
+String buildAPRSPacket(const char* path, bool advance) {
 #if BMP280_ENABLED
     float altM = bmpReady ? bmp.readAltitude(bmpSeaLevelHpa) : lastPos.altM;
 #else
@@ -397,16 +397,20 @@ String buildAPRSPacket() {
         true, (int)(altM * 3.28084f));
 
     // comment2 is added after the normal comment on every comment2_every-th beacon (0 = never)
+    // (advance = false builds the same beacon again, e.g. for the second SF, without counting it twice)
     static uint32_t beaconCount = 0;
-    beaconCount++;
-    bool extra = tkCfg.comment2_every > 0 && tkCfg.comment2[0] && beaconCount % tkCfg.comment2_every == 0;
+    static bool extra = false;
+    if (advance) {
+        beaconCount++;
+        extra = tkCfg.comment2_every > 0 && tkCfg.comment2[0] && beaconCount % tkCfg.comment2_every == 0;
+    }
     String comment = tkCfg.comment[0] ? String(" ") + tkCfg.comment : String();
     if (extra) comment += String(" ") + tkCfg.comment2;
 
     return APRSPacketLib::generateBase91GPSBeaconPacket(
         String(myCallsignFull),
         String(tkCfg.tocall),
-        String(tkCfg.path),
+        String(path ? path : tkCfg.path),
         String(tkCfg.sym_table),
         gpsData) + comment;
 }
@@ -455,6 +459,27 @@ static void horusAfterBeacon() {
 #endif
 
 // ============================================================
+// The "also transmit on the other SF" checkbox (dual_sf): the other common spreading factor
+// is SF7 when the main one is SF12, and SF12 when the main one is SF7. Any other main SF: none.
+// ============================================================
+static uint8_t otherSf() { return tkCfg.sf == 12 ? 7 : tkCfg.sf == 7 ? 12 : 0; }
+
+// Sends the beacon and, if dual_sf is on, the same position again on the other SF. The second
+// copy has no digipeater path, so it is heard and gated but not repeated across a wide area.
+static void sendAprsBeaconPackets() {
+    radioTransmit(buildAPRSPacket());
+    uint8_t sf2 = otherSf();
+    if (tkCfg.dual_sf && sf2) {
+        radio.standby();
+        if (radio.setSpreadingFactor(sf2) == RADIOLIB_ERR_NONE) {
+            DBG(F("[TX APRS SF")); DBG(sf2); DBGLN(F("]"));
+            radioTransmit(buildAPRSPacket("", false));
+        }
+        radioReady = false;                      // start over from the normal settings before listening or the next beacon
+    }
+}
+
+// ============================================================
 // SEND BEACON
 // ============================================================
 void sendBeacon() {
@@ -483,7 +508,7 @@ void sendBeacon() {
 #endif
 
     if (havePos && tkCfg.aprs) {
-        radioTransmit(buildAPRSPacket());
+        sendAprsBeaconPackets();
     }
 }
 
@@ -1013,7 +1038,7 @@ static void runTrackerScheduler() {
             checkCutdown(altM);
         }
 #endif
-        if (tkCfg.aprs && lastPos.valid) { if (!radioReady) radioInit(); radio.standby(); radioTransmit(buildAPRSPacket()); }
+        if (tkCfg.aprs && lastPos.valid) { if (!radioReady) radioInit(); radio.standby(); sendAprsBeaconPackets(); }
         lastAprsMs = startMs;
         nextAprsMs = startMs + aprsIntervalMs();
         backToLoraRx();

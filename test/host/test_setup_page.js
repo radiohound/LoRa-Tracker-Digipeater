@@ -17,6 +17,8 @@ class El {
   append(...c) { c.forEach(x => { this.children.push(x); if (x instanceof El) x.parent = this; }); }
   add(o) { this.options.push(o); if (this.options.length === 1 && !this.value) this.value = o.value; }
   closest() { return this.parent || new El("label"); }
+  addEventListener() {}
+  querySelector(tag) { return this.children.find(c => c instanceof El && c.tag === tag) || new El(tag); }
   set innerHTML(v) {}
 }
 class Option { constructor(text, value) { this.text = text; this.value = value; } }
@@ -27,6 +29,7 @@ function makeEnv(sim, lossRate) {
     getElementById: id => els[id] || (els[id] = new El(id)),
     createElement: t => { const e = new El(t); created.push(e); return e; },
     querySelectorAll: sel => created.filter(e => e.dataset && e.dataset.name),
+    querySelector: sel => { const m = /data-name="([^"]+)"/.exec(sel); return m ? created.find(e => e.dataset && e.dataset.name === m[1]) || null : null; },
   };
   // the fake serial port: what the page writes goes to the simulated tracker; its output comes back, with characters lost at lossRate
   let queue = [], wake = null, closed = false;
@@ -45,7 +48,7 @@ function makeEnv(sim, lossRate) {
   const navigator = { serial: { requestPort: async () => port } };
   const ctx = { document, navigator, Option, TextDecoder, TextEncoder, setTimeout, clearTimeout, console, Promise, Uint8Array, crypto: {}, fetch: undefined, JSON, Number, Object, Math, Date };
   vm.createContext(ctx);
-  vm.runInContext(script + "\n;globalThis.__api = { get settings() { return settings; }, readSettings, save, wantedPairs };", ctx);
+  vm.runInContext(script + "\n;globalThis.__api = { get settings() { return settings; }, readSettings, save, wantedPairs, dualLabel };", ctx);
   return { els, created, document, ctx, api: ctx.__api };
 }
 
@@ -61,6 +64,14 @@ async function session(lossRate, label, call) {
   CHECK(!!field("call") && !!field("horus_call") && !!field("bw") && !!field("cr") && !!field("horus_ver"), label + ": form built");
   CHECK(field("bw").options.length >= 10 && field("horus_ver").options.length === 2, label + ": selects filled");
   CHECK(!els.n0call.hidden === !call, label + ": N0CALL warning " + (call ? "hidden" : "shown"));
+
+  // the "also transmit on the other SF" setting is named after the SF it adds, and is off for other main SFs
+  const dualName = () => field("dual_sf").parent.children[0].textContent;
+  api.dualLabel();
+  CHECK(field("sf").value === "12" && dualName() === "Also transmit on SF7" && field("dual_sf").disabled === false, label + ": dual_sf named SF7 when the main SF is 12 (" + dualName() + ")");
+  field("sf").value = "7";  api.dualLabel(); CHECK(dualName() === "Also transmit on SF12" && !field("dual_sf").disabled, label + ": dual_sf named SF12 when the main SF is 7");
+  field("sf").value = "9";  api.dualLabel(); CHECK(dualName() === "Also transmit on the other SF" && field("dual_sf").disabled, label + ": dual_sf off for SF9");
+  field("sf").value = "12"; api.dualLabel();
 
   // change a few settings (one of them a radio setting) and save
   field("call").value = "w2hab"; field("ssid").value = "11"; field("beacon_s").value = "60";
