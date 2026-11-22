@@ -663,9 +663,8 @@ void updateStation(const String& call, float lat, float lon) {
         for (int i = 0; i < STATION_TRACK_COUNT; i++) {
             if (!stationTable[i].valid) { idx = i; break; }
         }
-        // Table full — overwrite oldest entry (slot 0, simple rotation)
+        // Table full — shift everyone down and overwrite the last slot
         if (idx < 0) {
-            idx = 0;
             for (int i = 1; i < STATION_TRACK_COUNT; i++) stationTable[i-1] = stationTable[i];
             idx = STATION_TRACK_COUNT - 1;
         }
