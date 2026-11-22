@@ -38,7 +38,10 @@ typedef struct {
     uint32_t horus_freq_hz;       /* lowest of the four tones */
     int8_t   horus_power_dbm;
     uint16_t horus_sync_s, horus_off_s;   /* time slots: transmit when (t - off) mod sync == 0; sync 0 = off */
-    uint8_t  horus_div;           /* send Horus on every Nth beacon */
+    uint8_t  horus_div;           /* tracker-only mode: Horus on every Nth beacon; ignored when the tracker + digipeater mode sends by phase (horus_asc etc.) */
+    /* send rates per flight phase, seconds. beacon_s above is the LoRa APRS rate while ascending. */
+    uint16_t aprs_desc_s, aprs_gnd_s;
+    uint16_t horus_asc_s, horus_desc_s, horus_gnd_s;
 } tk_settings_t;
 
 /* What a command asks the caller to do (bit mask). */

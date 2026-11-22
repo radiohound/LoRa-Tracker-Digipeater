@@ -25,7 +25,7 @@ struct HorusSettings {
     int8_t   powerDbm;         // above 14 uses the HP PA
     uint16_t syncSeconds;      // time slots: 0 = off
     uint16_t offsetSeconds;
-    uint8_t  beaconDivider;    // send on every Nth beacon
+    uint8_t  beaconDivider;    // tracker-only mode: send on every Nth beacon
 };
 
 HorusSettings& horusSettings();                    // defaults are filled in on first use
@@ -37,5 +37,8 @@ bool horusSend(const HorusFix& fix);
 
 // Counts calls and sends only every beaconDivider-th one.
 bool horusSendDivided(const HorusFix& fix);
+
+// millis() when the last packet's transmission began (after the wait for the time slot); 0 before the first one.
+uint32_t horusLastTxStartMs();
 
 uint16_t horusSequence();                          // packet counter, for debug output

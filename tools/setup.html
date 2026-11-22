@@ -236,9 +236,10 @@ async function readSettings() {
 
 // ---- what each setting does, in plain words; the ranges come from the tracker itself (see buildForm) ----
 const GROUPS = [
-  ["LoRa APRS beacon", ["call", "ssid", "comment", "sym_table", "sym_code", "path", "tocall", "beacon_s", "aprs", "gps_timeout"]],
+  ["LoRa APRS beacon", ["call", "ssid", "comment", "sym_table", "sym_code", "path", "tocall", "aprs", "gps_timeout"]],
+  ["How often to send, by flight phase (the GPS decides the phase: ascent, descent, landed)", ["beacon_s", "aprs_desc", "aprs_gnd", "horus_asc", "horus_desc", "horus_gnd"]],
   ["LoRa radio (APRS). These need the radio restarted: the page does that when you save.", ["freq", "bw", "sf", "cr", "power", "sync", "preamble"]],
-  ["Horus Binary (4FSK telemetry)", ["horus", "horus_ver", "horus_call", "horus_id", "horus_freq", "horus_power", "horus_sync", "horus_off", "horus_div"]],
+  ["Horus Binary (4FSK telemetry)", ["horus", "horus_ver", "horus_call", "horus_id", "horus_freq", "horus_power", "horus_sync", "horus_off"]],
 ];
 const DESC = {
   call: "Your callsign without the SSID. Until it is set to something other than N0CALL the tracker sends no LoRa APRS.",
@@ -248,7 +249,12 @@ const DESC = {
   sym_code: "APRS symbol: O is a balloon, > a car, k a truck.",
   path: "Digipeater path of the beacon, e.g. WIDE1-1. Empty for none.",
   tocall: "The APRS destination (tocall) this software uses. Leave it unless you have your own.",
-  beacon_s: "Seconds between beacon cycles (a cycle: wait for a GPS fix, send APRS, then Horus).",
+  beacon_s: "LoRa APRS: seconds between beacons while ascending (also on the bench, before any flight).",
+  aprs_desc: "LoRa APRS: seconds between beacons while descending. Shorter is better here: receivers miss many packets on the way down.",
+  aprs_gnd: "LoRa APRS: seconds between beacons after landing. The last good position is repeated.",
+  horus_asc: "Horus: seconds between packets while ascending (also on the bench). Best a multiple of the time-slot cycle below.",
+  horus_desc: "Horus: seconds between packets while descending.",
+  horus_gnd: "Horus: seconds between packets after landing, with the last good position.",
   aprs: "Send the LoRa APRS beacon. Turn off to fly with Horus only.",
   gps_timeout: "Longest wait for a GPS fix each cycle, in seconds.",
   freq: "LoRa APRS frequency in MHz. 433.775 is the usual one.",
@@ -264,9 +270,8 @@ const DESC = {
   horus_id: "Horus v2 payload ID, 256 to 65535. Only used with version 2. 256 is the shared test ID.",
   horus_freq: "The lowest of the four Horus tones, in MHz. Put it 1 kHz above the frequency you announce, so receivers tuned to that frequency (USB) hear the tones: 431.051 for 431.050.",
   horus_power: "Horus transmit power in dBm. At 14 or below the low-power amplifier is used (see power above): use 15 to 22 unless the firmware was built for the high-power amplifier only.",
-  horus_sync: "Time slots, as RS41ng does: the cycle length in seconds. A packet is sent when the GPS time, counted from the top of the hour, is a whole number of cycles plus the offset. 0 = no slots, send right after the beacon.",
+  horus_sync: "Time slots, as RS41ng does: the cycle length in seconds. A packet is sent when the GPS time, counted from the top of the hour, is a whole number of cycles plus the offset. 0 = no slots, send as soon as the interval is up.",
   horus_off: "The offset inside the cycle, in seconds, below the cycle length. Two payloads sharing a frequency: the same cycle (e.g. 10) and different offsets (0 and 5).",
-  horus_div: "Send Horus on every Nth beacon cycle (1 = every one).",
 };
 const BW = ["7.8", "10.4", "15.6", "20.8", "31.25", "41.7", "62.5", "125", "250", "500"];
 const CR = ["4/5", "4/6", "4/7", "4/8"];

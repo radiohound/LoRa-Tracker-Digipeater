@@ -143,6 +143,12 @@ static void test_horus(void)
     run(&s, "set horus_off 10");   CHECK(said("below horus_sync") && s.horus_off_s == 5);
     run(&s, "set horus_sync 5");   CHECK(said("below horus_sync") && s.horus_sync_s == 10);
     run(&s, "set horus_div 0");    CHECK(said("out of range"));
+    /* rates by flight phase: defaults and range */
+    CHECK(s.horus_asc_s == 30 && s.horus_desc_s == 10 && s.horus_gnd_s == 60 && s.aprs_desc_s == 15 && s.aprs_gnd_s == 60);
+    run(&s, "set horus_desc 4");   CHECK(said("out of range") && s.horus_desc_s == 10);
+    run(&s, "set horus_desc 5");   CHECK(s.horus_desc_s == 5);
+    run(&s, "set aprs_gnd 120");   CHECK(s.aprs_gnd_s == 120);
+    run(&s, "set horus_asc 86401"); CHECK(said("out of range") && s.horus_asc_s == 30);
     run(&s, "set horus on");       CHECK(s.horus == 1);
 }
 

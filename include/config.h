@@ -96,7 +96,7 @@
 // ============================================================
 // BEACON
 // ============================================================
-#define BEACON_INTERVAL_S   5              // seconds between beacons
+#define BEACON_INTERVAL_S   30              // seconds between beacons
 
 // ============================================================
 // GPS
@@ -259,7 +259,25 @@
 #define HORUS_TIME_SYNC_OFFSET_SECONDS  0
 #endif
 #ifndef HORUS_BEACON_DIVIDER
-#define HORUS_BEACON_DIVIDER   1                // send Horus on every Nth beacon
+#define HORUS_BEACON_DIVIDER   1                // no longer used (the rates below replace it)
+#endif
+
+// Send rates by flight phase (the phase comes from the GPS, see src/flight/flight_phase.h).
+// While ascending, LoRa APRS uses BEACON_INTERVAL_S above.
+#ifndef HORUS_ASC_INTERVAL_S
+#define HORUS_ASC_INTERVAL_S   30               // Horus while ascending (and on the bench)
+#endif
+#ifndef HORUS_DESC_INTERVAL_S
+#define HORUS_DESC_INTERVAL_S  10               // Horus while descending: receivers miss many of these
+#endif
+#ifndef HORUS_GND_INTERVAL_S
+#define HORUS_GND_INTERVAL_S   60               // Horus after landing, last good position
+#endif
+#ifndef APRS_DESC_INTERVAL_S
+#define APRS_DESC_INTERVAL_S   15
+#endif
+#ifndef APRS_GND_INTERVAL_S
+#define APRS_GND_INTERVAL_S    60
 #endif
 
 #ifndef HSE_SYSCLK

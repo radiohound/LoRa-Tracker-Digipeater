@@ -56,7 +56,12 @@ static const field_t FIELDS[] = {
     /* 22 */ NUMF ("horus_power", horus_power_dbm, 0, 0, -9, 22, "dBm"),
     /* 23 */ NUMF ("horus_sync", horus_sync_s, 0, 0, 0, 3600, "s"),
     /* 24 */ NUMF ("horus_off", horus_off_s, 0, 0, 0, 3599, "s"),
-    /* 25 */ NUMF ("horus_div", horus_div, 0, 0, 1, 255, "beacons"),
+    /* 25 */ NUMF ("horus_div", horus_div, 0, 0, 1, 255, "unused"),
+    /* 26 */ NUMF ("aprs_desc", aprs_desc_s, 0, 0, 5, 86400, "s"),
+    /* 27 */ NUMF ("aprs_gnd", aprs_gnd_s, 0, 0, 5, 86400, "s"),
+    /* 28 */ NUMF ("horus_asc", horus_asc_s, 0, 0, 5, 86400, "s"),
+    /* 29 */ NUMF ("horus_desc", horus_desc_s, 0, 0, 5, 86400, "s"),
+    /* 30 */ NUMF ("horus_gnd", horus_gnd_s, 0, 0, 5, 86400, "s"),
 };
 #define NFIELDS ((int)(sizeof FIELDS / sizeof FIELDS[0]))
 #define F_CALLSIGN (&FIELDS[0])
@@ -92,6 +97,8 @@ void tks_defaults(tk_settings_t *s)
     s->horus_power_dbm = HORUS_TX_POWER_DBM;
     s->horus_sync_s = HORUS_TIME_SYNC_SECONDS; s->horus_off_s = HORUS_TIME_SYNC_OFFSET_SECONDS;
     s->horus_div = HORUS_BEACON_DIVIDER;
+    s->aprs_desc_s = APRS_DESC_INTERVAL_S;  s->aprs_gnd_s = APRS_GND_INTERVAL_S;
+    s->horus_asc_s = HORUS_ASC_INTERVAL_S;  s->horus_desc_s = HORUS_DESC_INTERVAL_S;  s->horus_gnd_s = HORUS_GND_INTERVAL_S;
 }
 
 void tks_fullcall(const tk_settings_t *s, char *out, size_t cap)

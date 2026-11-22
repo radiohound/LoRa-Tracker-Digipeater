@@ -504,6 +504,27 @@ TCXO delay of 0 µs stops the radio transmitting at all (500 µs and 5 ms work).
 
 ---
 
+## Send rates by flight phase (tracker + digipeater mode)
+
+LoRa APRS and Horus each have their own interval for three phases, and the GPS decides which phase the board is in:
+
+| Phase | LoRa APRS | Horus | Default |
+|---|---|---|---|
+| Ascent (also on the bench, before any flight) | `beacon_s` | `horus_asc` | 30 s / 30 s |
+| Descent | `aprs_desc` | `horus_desc` | 15 s / 10 s |
+| Landed | `aprs_gnd` | `horus_gnd` | 60 s / 60 s |
+
+Set them with `set horus_desc 10` and so on (5 s to 24 h), or on the setup page. On the ground the board repeats the last good position.
+
+How the phase is found (`src/flight/flight_phase.h`, thresholds are constants there):
+- **Descent**: the board has climbed at least 500 m above its first fix, then sinks faster than 5 m/s for 5 s in a row. One bad GPS fix does not trigger it.
+- **Landed**: it has flown, is at least 300 m below its highest point, and has stood still (under 0.7 m/s vertical and 3 km/h) for 60 s. A board on a desk never reaches it, because it needs a flight first.
+- **Back to ascent**: climbing faster than 2 m/s for 10 s (a new launch).
+
+The GPS stays on all the time in this mode and is read once a second; between packets the radio listens, so the board still digipeats. Horus packets stay on the time-slot grid (`horus_sync`, `horus_off`), and a 30 s interval is a whole number of 10 s cycles. The send is started about 1.5 s before the slot so the position is fresh. When a Horus packet is about to go, a due LoRa APRS beacon waits until the Horus packet is done.
+
+Tested: the phase detector against simulated flights on a PC (`make -C test/host test`), and the rates at their defaults on the bench with a live GPS. Not tested: an actual flight, descent and landing detection with real GPS velocities, and the case where the GPS loses its fix for a long time. Tracker-only mode still sends one Horus packet per beacon (`horus_div`).
+
 ## Known caveats
 
 - **APRSPacketLib field names** — the library evolves quickly. If `APRSPacket`

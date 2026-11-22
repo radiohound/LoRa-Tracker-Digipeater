@@ -6,7 +6,7 @@
 
 extern tk_settings_t tkCfg;             // the live settings; config.h values are the defaults
 extern volatile bool tkBeaconNow;       // set by the "beacon" command: the main loop runs a beacon cycle now
-extern volatile bool tkHorusNow;        // set by the "horus" command: that cycle also sends a Horus packet (ignoring the divider)
+extern volatile bool tkHorusNow;        // set by the "horus" command: send a Horus packet now
 
 void tkKeysAtBoot();                    // call first thing in setup(): Key 1 held = jump to the bootloader, user key = defaults
 void tkSettingsBegin();                 // open the serial port, load the record from flash, print the boot lines

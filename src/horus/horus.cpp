@@ -21,6 +21,8 @@ static HorusSettings settings;
 static bool     settingsReady = false;
 static uint16_t seq = 0;
 static uint8_t  divCount = 0;
+static uint32_t lastTxStartMs = 0;
+uint32_t horusLastTxStartMs() { return lastTxStartMs; }
 static float    lastAltM = 0;
 static uint32_t lastAltMs = 0;
 static bool     haveLastAlt = false;
@@ -148,6 +150,7 @@ bool horusSend(const HorusFix& fixIn) {
     horusSettings();
     HorusFix fix = fixIn;
     uint32_t t = alignToSlot(fix);
+    lastTxStartMs = millis();
     ++seq;
 
     uint8_t frame[64];

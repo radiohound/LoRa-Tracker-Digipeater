@@ -202,7 +202,7 @@ static void handleCommand(const char *line) {
         if (!tks_horus_call_is_set(&tkCfg)) OUTLN(F("error: set a Horus callsign (horus_call) or the main callsign first"));
 #if HORUS_ENABLED
         else if (!tkCfg.horus) OUTLN(F("error: horus is off (set horus on)"));
-        else { tkBeaconNow = tkHorusNow = true; OUTLN(F("ok: a Horus packet follows the next beacon cycle, which starts now")); }
+        else { tkHorusNow = true; OUTLN(F("ok: a Horus packet is sent now")); }
 #else
         else OUTLN(F("error: this firmware was built without Horus"));
 #endif
