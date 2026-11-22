@@ -1,7 +1,7 @@
 #pragma once
 
 // ============================================================
-//  USER CONFIGURATION — balloon-digi branch
+//  USER CONFIGURATION — low-power-ground-digi-for-balloons branch (formerly balloon-digi)
 //
 //  Adds MODE_BALLOON_DIGI to the standard modes.
 //  All improvements from main branch (amortised re-init,

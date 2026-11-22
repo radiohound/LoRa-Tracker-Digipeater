@@ -1,6 +1,6 @@
 // ============================================================
 //  STM32WLE5 LoRa APRS — Tracker + Digipeater + Balloon Tracker
-//  Branch: balloon-digi
+//  Branch: low-power-ground-digi-for-balloons (formerly balloon-digi)
 //
 //  Adds MODE_BALLOON_DIGI and MODE_DIGI_CAD.
 //  All power improvements from main branch are present here.
