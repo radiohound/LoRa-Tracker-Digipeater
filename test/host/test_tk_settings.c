@@ -143,6 +143,11 @@ static void test_horus(void)
     run(&s, "set horus_off 10");   CHECK(said("below horus_sync") && s.horus_off_s == 5);
     run(&s, "set horus_sync 5");   CHECK(said("below horus_sync") && s.horus_sync_s == 10);
     run(&s, "set horus_div 0");    CHECK(said("out of range"));
+    /* tocall is fixed when the firmware is built: shown, but not settable */
+    CHECK(strcmp(s.tocall, "APLAB1") == 0);
+    run(&s, "set tocall APZ123");  CHECK(said("fixed when the firmware is built") && strcmp(s.tocall, "APLAB1") == 0);
+    run(&s, "get tocall");         CHECK(said("tocall = APLAB1 (fixed)"));
+    run(&s, "show");               CHECK(said("tocall = APLAB1 (fixed)"));
     /* also transmit on the other SF: off by default, a plain on/off */
     CHECK(s.dual_sf == 0);
     run(&s, "set dual_sf on");     CHECK(s.dual_sf == 1);
@@ -213,6 +218,18 @@ static void test_record(void)
     n = make_rec(rec, e, k);
     got = tks_unpack(rec, n, &r, &rej);
     CHECK(got == 2 && rej == 1 && r.beacon_s == 60 && r.sf == d.sf && strcmp(r.comment, "hi!") == 0);
+
+    /* a tocall in a saved record (from an older firmware) is ignored, and the tocall is never stored */
+    k = 0;
+    e[k++] = 6;  e[k++] = 6; e[k++] = 'A'; e[k++] = 'P'; e[k++] = 'Z'; e[k++] = '1'; e[k++] = '2'; e[k++] = '3';   /* tocall = APZ123 */
+    e[k++] = 7;  e[k++] = 4; e[k++] = 60; e[k++] = 0; e[k++] = 0; e[k++] = 0;                                      /* beacon_s = 60 */
+    n = make_rec(rec, e, k);
+    got = tks_unpack(rec, n, &r, &rej);
+    CHECK(got == 1 && rej == 0 && strcmp(r.tocall, "APLAB1") == 0 && r.beacon_s == 60);
+    tks_defaults(&s); strcpy(s.tocall, "APZ999");
+    n = tks_pack(&s, rec, sizeof rec);
+    got = tks_unpack(rec, n, &r, &rej);
+    CHECK(strcmp(r.tocall, "APLAB1") == 0);
 
     /* a bad value for a bool, and a text entry that is too long or has a character that is not allowed */
     k = 0;

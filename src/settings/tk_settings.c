@@ -14,6 +14,7 @@ enum { CS_CALL, CS_PATH, CS_TEXT, CS_SYM, CS_HCALL, CS_NOTE };
 #define F_BW    4u      /* only the LoRa bandwidths */
 #define F_CALL  8u      /* a callsign: also accepts -SSID */
 #define F_CR    16u     /* LoRa coding rate: stored as 5 to 8, shown and accepted as 4/5 to 4/8 */
+#define F_LOCKED 32u    /* fixed when the firmware is built: shown, but not settable and not saved or loaded */
 
 typedef struct {
     const char *name;
@@ -37,7 +38,7 @@ static const field_t FIELDS[] = {
     /*  3 */ STRF ("sym_table", sym_table, CS_SYM, 0, 1, 1),
     /*  4 */ STRF ("sym_code", sym_code, CS_SYM, 0, 1, 1),
     /*  5 */ STRF ("path", path, CS_PATH, 0, 0, 23),
-    /*  6 */ STRF ("tocall", tocall, CS_CALL, 0, 1, 6),
+    /*  6 */ STRF ("tocall", tocall, CS_CALL, F_LOCKED, 1, 6),   /* the registered APLAB1: not changeable by users */
     /*  7 */ NUMF ("beacon_s", beacon_s, 0, 0, 5, 86400, "s"),
     /*  8 */ BOOLF("aprs", aprs),
     /*  9 */ NUMF ("gps_timeout", gps_timeout_s, 0, 0, 1, 600, "s"),
@@ -278,7 +279,7 @@ static void show_one(const tk_settings_t *s, const field_t *f, const char *prefi
 {
     char v[64];
     fmt_value(s, f, v, sizeof v);
-    say(emit, ctx, "%s%s = %s%s%s%s", prefix, f->name, v, f->kind == K_NUM && f->unit[0] ? " " : "", f->kind == K_NUM ? f->unit : "", mark && (f->flags & F_RADIO) ? " *" : "");
+    say(emit, ctx, "%s%s = %s%s%s%s", prefix, f->name, v, f->kind == K_NUM && f->unit[0] ? " " : "", f->kind == K_NUM ? f->unit : "", mark && (f->flags & F_RADIO) ? " *" : (f->flags & F_LOCKED) ? " (fixed)" : "");
 }
 
 /* A value typed by the user -> the setting, or an error text. Works on a copy so a refused value changes nothing. */
@@ -387,6 +388,7 @@ unsigned tks_exec(tk_settings_t *s, const char *line, tks_emit_t emit, void *ctx
         if (*rest) { *rest++ = 0; while (*rest == ' ' || *rest == '\t') rest++; }
         f = *arg ? find(arg) : NULL;
         if (!f) { say(emit, ctx, "error: unknown setting \"%s\" (see help)", arg); return 0; }
+        if (f->flags & F_LOCKED) { say(emit, ctx, "error: %s is fixed when the firmware is built and cannot be changed here", f->name); return 0; }
         if (!*rest) { say(emit, ctx, "error: set %s VALUE", f->name); return 0; }
         if (f->kind != K_STR && strpbrk(rest, " \t")) { say(emit, ctx, "error: %s: one value only", f->name); return 0; }
         err = set_field(&t, f, rest);
@@ -437,6 +439,7 @@ size_t tks_pack(const tk_settings_t *s, uint8_t *out, size_t cap)
     for (i = 0; i < NFIELDS; i++) {
         const field_t *f = &FIELDS[i];
         size_t len = f->kind == K_STR ? strlen(cstr_at(s, f)) : 4;
+        if (f->flags & F_LOCKED) continue;                              /* never stored: the built-in value always applies */
         if (w + 2 + len + 4 + 8 > cap) return 0;
         out[w++] = (uint8_t)i; out[w++] = (uint8_t)len;
         if (f->kind == K_STR) { memcpy(out + w, cstr_at(s, f), len); w += len; }
@@ -471,6 +474,7 @@ int tks_unpack(const uint8_t *in, size_t n, tk_settings_t *s, int *rejected)
         p += 2u + l;
         if (p > end) break;
         if ((int)id >= NFIELDS) continue;                              /* a setting a newer firmware added */
+        if (FIELDS[id].flags & F_LOCKED) continue;                     /* a fixed setting saved by an older firmware: ignored */
         {
             const field_t *f = &FIELDS[id];
             tk_settings_t t = *s; const char *err = NULL;
