@@ -3,6 +3,8 @@
 Built around the **Ebyte E77-400MBL-01** (STM32WLE5CC, 433 MHz) with support
 for the ST Nucleo-WL55JC and other STM32WLE5-based modules.
 
+**[Open the browser setup page](https://radiohound.github.io/LoRa-Tracker-Digipeater/tools/setup.html)** to change settings and update firmware over USB (Chrome or Edge).
+
 Libraries: **[RadioLib](https://github.com/jgromes/RadioLib)** (jgromes) + **[APRSPacketLib](https://github.com/richonguzman/APRSPacketLib)** (richonguzman).
 
 Licensed under the [MIT License](LICENSE) — free to use, modify, and distribute with attribution.
